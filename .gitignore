@@ -1,6 +1,7 @@
 node_modules/
 .expo/
 dist/
+.vscode/
 web-build/
 expo-env.d.ts
 .kotlin/
@@ -21,4 +22,3 @@ yarn-error.*
 /ios
 /android
 package-lock.json
-/.vscode
