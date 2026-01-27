@@ -1,31 +1,48 @@
 import React from 'react';
-import { View, Text, StyleSheet, FlatList } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView } from 'react-native';
 import { AppColors } from '../constants/Colors';
+import StorageService from '../services/StorageService';
+import XmppService from '../services/XmppService';
 
-const ChatListScreen = () => {
+const ChatListScreen = ({ navigation }) => {
+  
+  const handleLogout = async () => {
+    XmppService.disconnect();
+    await StorageService.deleteItem('userJid');
+    await StorageService.deleteItem('userPass');
+    navigation.replace('Login');
+  };
+
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Мои Орехи (Чаты)</Text>
+        <Text style={styles.headerTitle}>Орехи</Text>
+        <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
+          <Text style={styles.logoutText}>Выйти</Text>
+        </TouchableOpacity>
       </View>
       <View style={styles.content}>
-        <Text style={{color: '#666'}}>Здесь скоро будут твои сообщения...</Text>
+        <Text style={styles.emptyText}>Здесь будут ваши чаты</Text>
       </View>
-    </View>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#fff' },
+  container: { flex: 1, backgroundColor: '#F5F5F5' },
   header: { 
-    height: 100, 
+    height: 60, 
     backgroundColor: AppColors.primaryBrown, 
-    justifyContent: 'center', 
-    alignItems: 'center',
-    paddingTop: 40
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    paddingHorizontal: 15 
   },
   headerTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
-  content: { flex: 1, justifyContent: 'center', alignItems: 'center' }
+  logoutBtn: { padding: 8, borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.2)' },
+  logoutText: { color: '#fff', fontWeight: 'bold' },
+  content: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  emptyText: { color: '#999', fontSize: 16 }
 });
 
 export default ChatListScreen;
