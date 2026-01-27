@@ -1,28 +1,44 @@
 import React, { useEffect } from 'react';
-import { View, Image, StyleSheet } from 'react-native';
-import { LinearGradient } from 'expo-linear-gradient';
+import { View, Image, StyleSheet, ActivityIndicator } from 'react-native';
+import * as SecureStore from 'expo-secure-store';
+import XmppService from '../services/XmppService';
 import { AppColors } from '../constants/Colors';
 
 const SplashScreen = ({ navigation }) => {
   useEffect(() => {
-    // Через 3 секунды переходим на логин
-    const timer = setTimeout(() => {
+    checkLogin();
+  }, []);
+
+  const checkLogin = async () => {
+    try {
+      const savedJid = await SecureStore.getItemAsync('userJid');
+      const savedPass = await SecureStore.getItemAsync('userPass');
+
+      if (savedJid && savedPass) {
+        console.log('Найдены сохраненные данные, входим...');
+        
+        XmppService.xmpp.once('online', () => {
+          navigation.replace('ChatList');
+        });
+
+        setTimeout(() => {
+           navigation.replace('Login');
+        }, 5000);
+
+        XmppService.connect(savedJid, savedPass);
+      } else {
+        setTimeout(() => navigation.replace('Login'), 2000);
+      }
+    } catch (e) {
       navigation.replace('Login');
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, [navigation]);
+    }
+  };
 
   return (
-    <LinearGradient
-      colors={[AppColors.lightBrown, AppColors.primaryBrown]}
-      style={styles.container}
-    >
-      <Image 
-        source={require('../../assets/logo.png')} 
-        style={styles.logo} 
-        resizeMode="contain" 
-      />
-    </LinearGradient>
+    <View style={styles.container}>
+      <Image source={require('../../assets/logo.png')} style={styles.logo} />
+      <ActivityIndicator size="large" color="#fff" style={{ marginTop: 20 }} />
+    </View>
   );
 };
 

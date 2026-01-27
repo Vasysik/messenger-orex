@@ -1,29 +1,26 @@
-// ================= POLYFILLS START =================
-// 1. Подключаем генератор случайных чисел
+import { Platform } from 'react-native';
 import 'react-native-get-random-values';
-
-// 2. Подключаем библиотеку UUID
 import { v4 as uuidv4 } from 'uuid';
+import { client, xml } from '@xmpp/client';
 
-// 3. Полифилл для URL (чтобы работали ws:// ссылки)
-import { URL } from 'react-native-url-polyfill';
-global.URL = URL;
+if (typeof global.process === 'undefined') {
+    global.process = require('process');
+}
+if (typeof global.Buffer === 'undefined') {
+    global.Buffer = require('buffer').Buffer;
+}
 
-// 4. Добавляем process и Buffer (нужны для xmpp.js)
-global.process = require('process');
-global.Buffer = require('buffer').Buffer;
+if (Platform.OS !== 'web') {
+    const { URL } = require('react-native-url-polyfill');
+    global.URL = URL;
+}
 
-// 5. САМОЕ ГЛАВНОЕ: Чиним randomUUID
 if (!global.crypto) {
     global.crypto = {};
 }
 if (!global.crypto.randomUUID) {
-    // Говорим: "Если кто-то попросит randomUUID, используй функцию uuidv4"
     global.crypto.randomUUID = uuidv4; 
 }
-// ================= POLYFILLS END =================
-
-import { client, xml } from '@xmpp/client';
 
 class XmppService {
     constructor() {
@@ -35,18 +32,27 @@ class XmppService {
 
         console.log(`🔌 Подключаемся к ${jid}...`);
 
-        const [local, domain] = jid.split('@');
+        const [local, domain] = jid.split('@')
 
-        // Убираем '/resource', если юзер его ввел, чтобы не дублировать
-        const cleanDomain = domain.split('/')[0];
+        const cleanDomain = domain ? domain.split('/')[0] : '';
+
+        if (!cleanDomain) {
+            console.error('❌ Некорректный домен в JID');
+            return;
+        }
+
+        const serviceUrl = `wss://${cleanDomain}:5281/xmpp-websocket`;
+        
+        console.log(`🌐 URL сервиса: ${serviceUrl}`);
 
         try {
             this.xmpp = client({
-                service: `ws://${cleanDomain}:5280/xmpp-websocket`,
+                service: serviceUrl,
                 domain: cleanDomain,
                 resource: 'orekh-mobile',
                 username: local,
                 password: password,
+                sasl: ['PLAIN'],
             });
 
             this.xmpp.on('error', (err) => {
@@ -63,11 +69,9 @@ class XmppService {
 
             this.xmpp.on('online', async (address) => {
                 console.log('✅ ОРЕХ В СЕТИ! Адрес:', address.toString());
-                // Отправляем всем "Привет, я тут"
                 await this.xmpp.send(xml('presence'));
             });
             
-            // Ловим входящие сообщения (для теста)
             this.xmpp.on('stanza', async (stanza) => {
                 if (stanza.is('message')) {
                     console.log('📩 Входящее:', stanza.toString());
@@ -75,7 +79,7 @@ class XmppService {
             });
 
             this.xmpp.start().catch((e) => {
-                console.error('❌ Ошибка старта:', e);
+                console.error('❌ Ошибка старта (в promise):', e);
             });
 
         } catch (e) {

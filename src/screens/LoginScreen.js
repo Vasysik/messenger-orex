@@ -4,6 +4,7 @@ import {
 } from 'react-native';
 import { AppColors } from '../constants/Colors';
 import XmppService from '../services/XmppService';
+import * as SecureStore from 'expo-secure-store';
 
 const LoginScreen = ({ navigation }) => {
   const [jid, setJid] = useState('');
@@ -11,36 +12,36 @@ const LoginScreen = ({ navigation }) => {
   const [isLoading, setIsLoading] = useState(false);
 
   const handleLogin = () => {
-    // 1. Проверка на пустоту
     if (!jid || !password) {
       Alert.alert('Эй!', 'Введи JID и пароль, ну.');
       return;
     }
 
     setIsLoading(true);
-    console.log(`Попытка входа: ${jid}`);
 
-    // 2. Вызываем сервис (немного доработаем его колбэки прямо тут)
+    XmppService.xmpp.on('online', async () => {
+      await SecureStore.setItemAsync('userJid', jid);
+      await SecureStore.setItemAsync('userPass', password);
+      
+      setIsLoading(false);
+      navigation.replace('ChatList');
+    });
+
+    XmppService.xmpp.on('online', () => {
+      setIsLoading(false);
+      navigation.replace('ChatList');
+    });
+
+    XmppService.xmpp.on('error', (err) => {
+      setIsLoading(false);
+      Alert.alert('Ошибка', 'Не удалось войти: ' + err.message);
+    });
+
     try {
       XmppService.connect(jid, password);
-      
-      // Подпишемся на события прямо здесь, чтобы понять, когда пускать дальше
-      // В идеале это делается через глобальный стейт, но для старта пойдет так:
-      XmppService.xmpp.on('online', () => {
-        setIsLoading(false);
-        Alert.alert('Успех', 'Мы в сети! Орех расколот.');
-        // Тут потом будет переход на список чатов:
-        // navigation.replace('ChatList'); 
-      });
-
-      XmppService.xmpp.on('error', (err) => {
-        setIsLoading(false);
-        Alert.alert('Ошибка', 'Не удалось подключиться: ' + err.message);
-      });
-
     } catch (e) {
       setIsLoading(false);
-      Alert.alert('Ошибка', 'Что-то пошло не так при запуске: ' + e.message);
+      Alert.alert('Ошибка', 'Критический сбой');
     }
   };
 
