@@ -9,6 +9,7 @@ import XmppService from '../services/XmppService';
 
 const ChatListScreen = ({ navigation }) => {
   const [contacts, setContacts] = useState([]);
+  const [searchVisible, setSearchVisible] = useState(false);
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [isModalVisible, setModalVisible] = useState(false);
@@ -35,10 +36,10 @@ const ChatListScreen = ({ navigation }) => {
     finally { setLoading(false); }
   };
 
-  const filtered = contacts.filter(c => {
+  const filtered = searchVisible && search ? contacts.filter(c => {
     const last = XmppService.getLastMessage(c.jid)?.body || '';
     return c.name.toLowerCase().includes(search.toLowerCase()) || last.toLowerCase().includes(search.toLowerCase());
-  });
+  }) : contacts;
 
   const renderItem = ({ item }) => {
     const last = XmppService.getLastMessage(item.jid);
@@ -46,9 +47,12 @@ const ChatListScreen = ({ navigation }) => {
     const isOnline = XmppService.getPresence(item.jid) === 'online';
 
     return (
-      <TouchableOpacity style={styles.card} onPress={() => { XmppService.clearUnread(item.jid); navigation.navigate('Chat', { contact: item }); }}>
+      <TouchableOpacity style={styles.card} onPress={() => { 
+        XmppService.clearUnread(item.jid); 
+        navigation.navigate('Chat', { contact: item });
+      }}>
         <View>
-          <LinearGradient colors={['#A0522D', '#5D3A1A']} style={styles.avatar}>
+          <LinearGradient colors={[AppColors.lightBrown, AppColors.primaryBrown]} style={styles.avatar}>
             <Text style={styles.avatarTxt}>{item.name[0].toUpperCase()}</Text>
           </LinearGradient>
           <View style={[styles.dot, { backgroundColor: isOnline ? '#4CAF50' : '#9E9E9E' }]} />
@@ -69,14 +73,30 @@ const ChatListScreen = ({ navigation }) => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" backgroundColor="#3E2512" />
-      <View style={styles.header}>
+      <StatusBar barStyle="light-content" backgroundColor={AppColors.darkWalnut} />
+      
+      <LinearGradient colors={[AppColors.darkWalnut, AppColors.primaryBrown]} style={styles.header}>
         <View style={styles.top}>
-          <Text style={styles.title}>Мессенджер</Text>
-          <TouchableOpacity onPress={() => navigation.navigate('Profile')} style={styles.pBtn}><Text style={styles.pBtnTxt}>Профиль</Text></TouchableOpacity>
+          <Text style={styles.title}>Орехи</Text>
+          <View style={styles.actions}>
+            <TouchableOpacity onPress={() => { setSearchVisible(!searchVisible); setSearch(''); }} style={styles.actionBtn}>
+              <Text style={styles.actionIcon}>🔍</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => navigation.navigate('Profile')} style={styles.actionBtn}>
+              <Text style={styles.actionIcon}>👤</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-        <TextInput style={styles.search} placeholder="Поиск..." placeholderTextColor="#A58266" value={search} onChangeText={setSearch} />
-      </View>
+        {searchVisible && (
+          <TextInput 
+            style={styles.search} 
+            placeholder="Поиск..." 
+            placeholderTextColor="rgba(255,255,255,0.5)" 
+            value={search} 
+            onChangeText={setSearch} 
+          />
+        )}
+      </LinearGradient>
 
       {loading ? <ActivityIndicator style={{flex:1}} color="#8B4513" /> : (
         <FlatList data={filtered} keyExtractor={i => i.jid} renderItem={renderItem} contentContainerStyle={{paddingBottom: 100}} />
@@ -101,33 +121,34 @@ const ChatListScreen = ({ navigation }) => {
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#FDF8F3' },
-  header: { backgroundColor: '#3E2512', padding: 20, borderBottomLeftRadius: 20, borderBottomRightRadius: 20 },
-  top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 15 },
-  title: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
-  pBtn: { backgroundColor: 'rgba(255,255,255,0.1)', paddingHorizontal: 15, paddingVertical: 8, borderRadius: 20 },
-  pBtnTxt: { color: '#fff', fontWeight: 'bold' },
-  search: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 12, color: '#fff' },
-  card: { flexDirection: 'row', padding: 15, backgroundColor: '#fff', marginHorizontal: 15, marginVertical: 5, borderRadius: 15, elevation: 1 },
-  avatar: { width: 50, height: 50, borderRadius: 25, justifyContent: 'center', alignItems: 'center' },
-  avatarTxt: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
+  container: { flex: 1, backgroundColor: AppColors.backgroundWhite },
+  header: { paddingTop: 15, paddingBottom: 20, paddingHorizontal: 20, borderBottomLeftRadius: 25, borderBottomRightRadius: 25 },
+  top: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 },
+  title: { color: '#fff', fontSize: 28, fontWeight: 'bold' },
+  actions: { flexDirection: 'row', gap: 10 },
+  actionBtn: { backgroundColor: 'rgba(255,255,255,0.2)', width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center' },
+  actionIcon: { fontSize: 20 },
+  search: { backgroundColor: 'rgba(0,0,0,0.2)', borderRadius: 12, padding: 12, marginTop: 10, color: '#fff' },
+  card: { flexDirection: 'row', padding: 15, backgroundColor: '#fff', marginHorizontal: 15, marginVertical: 5, borderRadius: 16, shadowColor: AppColors.shadow, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.1, shadowRadius: 8, elevation: 3 },
+  avatar: { width: 56, height: 56, borderRadius: 28, justifyContent: 'center', alignItems: 'center' },
+  avatarTxt: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
   dot: { width: 12, height: 12, borderRadius: 6, position: 'absolute', bottom: 0, right: 0, borderWidth: 2, borderColor: '#fff' },
   info: { flex: 1, marginLeft: 15, justifyContent: 'center' },
   row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  name: { fontSize: 16, fontWeight: 'bold', color: '#3E2512' },
-  time: { fontSize: 11, color: '#999' },
-  msg: { fontSize: 14, color: '#666', flex: 1, marginRight: 10 },
-  badge: { backgroundColor: '#FF5722', borderRadius: 10, minWidth: 20, height: 20, alignItems: 'center', justifyContent: 'center' },
-  badgeTxt: { color: '#fff', fontSize: 10, fontWeight: 'bold' },
-  fab: { position: 'absolute', right: 20, bottom: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: '#8B4513', justifyContent: 'center', alignItems: 'center', elevation: 4 },
+  name: { fontSize: 17, fontWeight: '600', color: AppColors.darkWalnut },
+  time: { fontSize: 12, color: '#999' },
+  msg: { fontSize: 14, color: '#888', flex: 1, marginRight: 10 },
+  badge: { backgroundColor: AppColors.unread, borderRadius: 12, minWidth: 24, height: 24, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 8 },
+  badgeTxt: { color: '#fff', fontSize: 12, fontWeight: 'bold' },
+  fab: { position: 'absolute', right: 20, bottom: 30, width: 60, height: 60, borderRadius: 30, backgroundColor: AppColors.primaryBrown, justifyContent: 'center', alignItems: 'center', elevation: 5 },
   fabTxt: { color: '#fff', fontSize: 30 },
-  modal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
-  modalContent: { backgroundColor: '#fff', borderRadius: 20, padding: 20 },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, textAlign: 'center' },
-  input: { borderBottomWidth: 1, borderColor: '#ddd', padding: 10, marginBottom: 20 },
-  buttons: { flexDirection: 'row', gap: 10 },
-  btnSec: { flex: 1, padding: 12, alignItems: 'center' },
-  btnPri: { flex: 1, padding: 12, backgroundColor: '#8B4513', borderRadius: 10, alignItems: 'center' }
+  modal: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: '#fff', borderTopLeftRadius: 30, borderTopRightRadius: 30, padding: 25, paddingBottom: 40 },
+  modalTitle: { fontSize: 24, fontWeight: 'bold', textAlign: 'center', color: AppColors.darkWalnut, marginBottom: 20 },
+  input: { borderWidth: 2, borderColor: AppColors.sand, borderRadius: 15, padding: 15, fontSize: 16, backgroundColor: AppColors.cream },
+  buttons: { flexDirection: 'row', gap: 15, marginTop: 25 },
+  btnSec: { flex: 1, padding: 16, alignItems: 'center', backgroundColor: '#f0f0f0', borderRadius: 15 },
+  btnPri: { flex: 1, padding: 16, backgroundColor: AppColors.primaryBrown, borderRadius: 15, alignItems: 'center' }
 });
 
 export default ChatListScreen;

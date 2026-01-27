@@ -23,6 +23,7 @@ class XmppService extends EventEmitter {
         this.presenceMap = {};
         this.typingMap = {};
         this.deliveryStatus = {}; 
+        this.readStatus = {};
         this.userJid = '';
     }
 
@@ -51,6 +52,7 @@ class XmppService extends EventEmitter {
         this.xmpp.on('online', async (address) => {
             await this.xmpp.send(xml('presence'));
             this.emit('online', address);
+            setTimeout(() => this.loadAllHistory(), 1000);
         });
 
         this.xmpp.on('stanza', async (stanza) => {
@@ -59,8 +61,10 @@ class XmppService extends EventEmitter {
             if (stanza.is('presence')) {
                 if (stanza.attrs.type === 'subscribe') {
                     await this.xmpp.send(xml('presence', { to: from, type: 'subscribed' }));
-                } else {
-                    this.presenceMap[from] = stanza.attrs.type === 'unavailable' ? 'offline' : 'online';
+                } else if (stanza.attrs.type === 'unavailable') {
+                    this.presenceMap[from] = 'offline';
+                } else if (!stanza.attrs.type) {
+                    this.presenceMap[from] = 'online';
                 }
                 this.emit('presence_update', { jid: from, status: this.presenceMap[from] });
             }
@@ -84,13 +88,20 @@ class XmppService extends EventEmitter {
                     this.emit('delivery_update', { msgId, status: 'delivered' });
                 }
 
+                const displayed = stanza.getChild('displayed', 'urn:xmpp:chat-markers:0');
+                if (displayed) {
+                    const msgId = displayed.attrs.id;
+                    this.readStatus[msgId] = true;
+                    this.emit('read_update', { msgId, status: 'read' });
+                }
+
                 if (stanza.getChild('body')) {
                     const msgId = stanza.attrs.id || uuidv4();
                     const body = stanza.getChildText('body');
                     
                     this.lastMessages[from] = { body, timestamp: new Date(), type: 'in' };
                     this.unreadCounts[from] = (this.unreadCounts[from] || 0) + 1;
-
+                    
                     if (stanza.getChild('request', 'urn:xmpp:receipts')) {
                         this.xmpp.send(xml('message', { to: stanza.attrs.from, id: uuidv4() },
                             xml('received', { xmlns: 'urn:xmpp:receipts', id: msgId })
@@ -110,11 +121,40 @@ class XmppService extends EventEmitter {
         this.xmpp.start().catch(() => {});
     }
 
+    async loadAllHistory() {
+        const roster = await this.getRoster();
+        for (const contact of roster) {
+            const history = await this.fetchHistory(contact.jid);
+            if (history.length > 0) {
+                const last = history[history.length - 1];
+                this.lastMessages[contact.jid] = {
+                    body: last.body,
+                    timestamp: last.timestamp,
+                    type: last.type
+                };
+                this.emit('last_message_update', contact.jid);
+            }
+        }
+    }
+
+    getMessageStatus(msgId) {
+        if (this.readStatus[msgId]) return 'read';
+        if (this.deliveryStatus[msgId] === 'delivered') return 'delivered';
+        return 'sent';
+    }
+
+    markAsRead(jid, msgId) {
+        if (!this.isConnected) return;
+        this.clearUnread(jid);
+        this.xmpp.send(xml('message', { to: jid, type: 'chat' },
+            xml('displayed', { xmlns: 'urn:xmpp:chat-markers:0', id: msgId })
+        ));
+    }
+
     getLastMessage(jid) { return this.lastMessages[jid.split('/')[0]] || null; }
     getUnreadCount(jid) { return this.unreadCounts[jid.split('/')[0]] || 0; }
     clearUnread(jid) { this.unreadCounts[jid.split('/')[0]] = 0; }
     getPresence(jid) { return this.presenceMap[jid.split('/')[0]] || 'offline'; }
-    getDeliveryStatus(msgId) { return this.deliveryStatus[msgId] || 'sending'; }
 
     sendTypingStatus(to, isTyping) {
         if (!this.isConnected) return;
@@ -129,6 +169,7 @@ class XmppService extends EventEmitter {
         this.xmpp.send(xml('message', { to, type: 'chat', id },
             xml('body', {}, text),
             xml('request', { xmlns: 'urn:xmpp:receipts' }),
+            xml('markable', { xmlns: 'urn:xmpp:chat-markers:0' }),
             xml('active', { xmlns: 'http://jabber.org/protocol/chatstates' })
         ));
         const bareJid = to.split('/')[0];
@@ -162,13 +203,14 @@ class XmppService extends EventEmitter {
                         const body = msg?.getChildText('body');
                         const delay = result.getChild('forwarded', 'urn:xmpp:forward:0')?.getChild('delay', 'urn:xmpp:delay');
                         if (body) {
+                            const msgId = result.attrs.id || uuidv4();
                             history.push({
-                                id: result.attrs.id || uuidv4(),
+                                id: msgId,
                                 body,
                                 from: msg.attrs.from.split('/')[0],
                                 timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
                                 type: msg.attrs.from.split('/')[0] === bareJid ? 'in' : 'out',
-                                status: 'delivered'
+                                status: this.getMessageStatus(msgId)
                             });
                         }
                     }
