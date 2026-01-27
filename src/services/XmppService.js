@@ -18,11 +18,12 @@ class XmppService extends EventEmitter {
         super();
         this.xmpp = null;
         this.isConnected = false;
+        this.lastMessages = {};
+        this.unreadCounts = {};
     }
 
     connect(jid, password) {
         if (this.xmpp) this.disconnect();
-        console.log("Попытка подключения к:", jid);
 
         const [local, domain] = jid.split('@');
         const cleanDomain = domain ? domain.split('/')[0] : '';
@@ -37,64 +38,72 @@ class XmppService extends EventEmitter {
         });
 
         this.xmpp.on('error', (err) => {
-            console.error('❌ XMPP Error:', err.message);
             this.emit('error', err);
         });
         
         this.xmpp.on('status', (status) => {
-            console.log('📡 Статус:', status);
             this.isConnected = (status === 'online');
             this.emit('status', status);
         });
 
         this.xmpp.on('online', async (address) => {
-            console.log('✅ В сети как:', address.toString());
             await this.xmpp.send(xml('presence'));
             this.emit('online', address);
         });
 
         this.xmpp.on('stanza', async (stanza) => {
-            console.log('📩 Входящая станза:', stanza.toString());
-
-            // 1. Обработка запросов на подписку (Авто-добавление)
             if (stanza.is('presence') && stanza.attrs.type === 'subscribe') {
                 const from = stanza.attrs.from;
-                console.log('🤝 Запрос дружбы от:', from);
-                // Автоматически подтверждаем подписку
                 await this.xmpp.send(xml('presence', { to: from, type: 'subscribed' }));
-                // И подписываемся в ответ
                 await this.xmpp.send(xml('presence', { to: from, type: 'subscribe' }));
                 this.emit('roster_update');
             }
 
-            // 2. Обработка сообщений
             if (stanza.is('message') && stanza.getChild('body')) {
                 if (stanza.getChild('result', 'urn:xmpp:mam:2')) return;
 
+                const fromJid = stanza.attrs.from.split('/')[0];
                 const messageData = {
                     id: stanza.attrs.id || uuidv4(),
-                    from: stanza.attrs.from.split('/')[0],
+                    from: fromJid,
                     body: stanza.getChildText('body'),
                     timestamp: new Date(),
                 };
-                console.log('💬 Новое сообщение:', messageData);
+                
+                this.lastMessages[fromJid] = {
+                    body: messageData.body,
+                    timestamp: messageData.timestamp,
+                    type: 'in'
+                };
+                this.unreadCounts[fromJid] = (this.unreadCounts[fromJid] || 0) + 1;
+                
                 this.emit('message', messageData);
+                this.emit('last_message_update', fromJid);
             }
 
-            // 3. Обработка обновления ростера сервером
             if (stanza.is('iq') && stanza.attrs.type === 'set' && stanza.getChild('query', 'jabber:iq:roster')) {
-                console.log('🔄 Ростер обновился на сервере');
                 this.emit('roster_update');
             }
         });
 
-        this.xmpp.start().catch((e) => console.error("Ошибка старта:", e));
+        this.xmpp.start().catch(() => {});
+    }
+
+    getLastMessage(jid) {
+        return this.lastMessages[jid.split('/')[0]] || null;
+    }
+
+    getUnreadCount(jid) {
+        return this.unreadCounts[jid.split('/')[0]] || 0;
+    }
+
+    clearUnread(jid) {
+        this.unreadCounts[jid.split('/')[0]] = 0;
     }
 
     async fetchHistory(withJid) {
         if (!this.isConnected) return [];
         const bareJid = withJid.split('/')[0];
-        console.log('📜 Запрос истории MAM для:', bareJid);
         
         const id = 'mam_' + uuidv4();
         
@@ -118,7 +127,6 @@ class XmppService extends EventEmitter {
             const history = [];
             
             const onStanza = (stanza) => {
-                // Ищем тег <result> внутри <message>
                 if (stanza.is('message')) {
                     const result = stanza.getChild('result');
                     if (result && (result.attrs.xmlns === 'urn:xmpp:mam:2' || result.attrs.xmlns === 'urn:xmpp:mam:1')) {
@@ -129,30 +137,36 @@ class XmppService extends EventEmitter {
                         const delay = forwarded?.getChild('delay');
 
                         if (body) {
+                            const msgType = msg.attrs.from.split('/')[0] === bareJid ? 'in' : 'out';
                             history.push({
                                 id: result.attrs.id || uuidv4(),
                                 body: body,
                                 from: msg.attrs.from.split('/')[0],
                                 timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
-                                // Если сообщение пришло от того, с кем мы в чате - оно входящее (in)
-                                type: msg.attrs.from.split('/')[0] === bareJid ? 'in' : 'out'
+                                type: msgType
                             });
                         }
                     }
                 }
 
-                // Ждем финальный IQ результат
                 if (stanza.is('iq') && stanza.attrs.id === id) {
                     this.xmpp.off('stanza', onStanza);
-                    console.log(`🎬 Финиш MAM! Сообщений в базе: ${history.length}`);
-                    resolve(history.sort((a, b) => a.timestamp - b.timestamp));
+                    const sorted = history.sort((a, b) => a.timestamp - b.timestamp);
+                    if (sorted.length > 0) {
+                        const last = sorted[sorted.length - 1];
+                        this.lastMessages[bareJid] = {
+                            body: last.body,
+                            timestamp: last.timestamp,
+                            type: last.type
+                        };
+                    }
+                    resolve(sorted);
                 }
             };
 
             this.xmpp.on('stanza', onStanza);
             this.xmpp.send(iq);
 
-            // Страховка
             setTimeout(() => {
                 this.xmpp.off('stanza', onStanza);
                 resolve(history);
@@ -172,7 +186,6 @@ class XmppService extends EventEmitter {
                     if (stanza.attrs.type === 'result') {
                         const query = stanza.getChild('query');
                         const items = query ? query.getChildren('item') : [];
-                        console.log('👥 Загружен ростер:', items.length, 'контактов');
                         resolve(items.map(item => ({
                             jid: item.attrs.jid,
                             name: item.attrs.name || item.attrs.jid.split('@')[0],
@@ -187,7 +200,6 @@ class XmppService extends EventEmitter {
 
     addContact(jid) {
         if (!this.isConnected) return;
-        console.log('➕ Добавление контакта и подписка на:', jid);
         this.xmpp.send(xml('presence', { to: jid, type: 'subscribe' }));
         const iq = xml('iq', { type: 'set', id: 'add_' + uuidv4() },
             xml('query', { xmlns: 'jabber:iq:roster' },
@@ -200,9 +212,16 @@ class XmppService extends EventEmitter {
     sendMessage(to, text) {
         if (!this.isConnected) return;
         const id = uuidv4();
-        console.log('📤 Отправка сообщения для:', to);
         const message = xml('message', { to, type: 'chat', id }, xml('body', {}, text));
         this.xmpp.send(message);
+        
+        const bareJid = to.split('/')[0];
+        this.lastMessages[bareJid] = {
+            body: text,
+            timestamp: new Date(),
+            type: 'out'
+        };
+        this.emit('last_message_update', bareJid);
     }
 
     disconnect() {
