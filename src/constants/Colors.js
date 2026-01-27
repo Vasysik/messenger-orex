@@ -18,6 +18,11 @@ export const AppColors = {
   unread: '#FF5722',
   error: '#FF3B30',
   
+  // Галочки сообщений
+  tickRead: '#90EE90',
+  tickDelivered: 'rgba(255,255,255,0.9)',
+  tickSent: 'rgba(255,255,255,0.5)',
+  
   // Тени
   shadow: 'rgba(93, 58, 26, 0.3)',
   

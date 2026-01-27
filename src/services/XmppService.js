@@ -3,6 +3,7 @@ import 'react-native-get-random-values';
 import { v4 as uuidv4 } from 'uuid';
 import { client, xml } from '@xmpp/client';
 import EventEmitter from 'events';
+import StorageService from './StorageService';
 
 if (typeof global.process === 'undefined') global.process = require('process');
 if (typeof global.Buffer === 'undefined') global.Buffer = require('buffer').Buffer;
@@ -22,12 +23,41 @@ class XmppService extends EventEmitter {
         this.unreadCounts = {};
         this.presenceMap = {};
         this.typingMap = {};
-        this.deliveryStatus = {}; 
-        this.readStatus = {};
         this.userJid = '';
         this.userPassword = '';
         this.reconnectTimer = null;
         this.reconnectAttempts = 0;
+        this.lastReadMessageId = {};
+        this.loadLastReadStatuses();
+    }
+
+    async loadLastReadStatuses() {
+        try {
+            const saved = await StorageService.getItem('lastReadMessages');
+            if (saved) {
+                this.lastReadMessageId = JSON.parse(saved);
+            }
+        } catch (e) {
+            console.log('Failed to load last read statuses:', e);
+        }
+    }
+
+    async saveLastReadStatuses() {
+        try {
+            await StorageService.setItem('lastReadMessages', JSON.stringify(this.lastReadMessageId));
+        } catch (e) {
+            console.log('Failed to save last read statuses:', e);
+        }
+    }
+
+    setLastReadMessage(contactJid, msgId) {
+        const bareJid = contactJid.split('/')[0];
+        this.lastReadMessageId[bareJid] = msgId;
+        this.saveLastReadStatuses();
+    }
+
+    getLastReadMessageId(contactJid) {
+        return this.lastReadMessageId[contactJid.split('/')[0]] || null;
     }
 
     connect(jid, password) {
@@ -109,16 +139,14 @@ class XmppService extends EventEmitter {
                 const received = stanza.getChild('received', 'urn:xmpp:receipts');
                 if (received) {
                     const msgId = received.attrs.id;
-                    this.deliveryStatus[msgId] = 'delivered';
-                    this.emit('delivery_update', { msgId, status: 'delivered' });
+                    this.emit('delivery_update', { msgId, contactJid: from });
                 }
 
                 const displayed = stanza.getChild('displayed', 'urn:xmpp:chat-markers:0');
                 if (displayed) {
                     const msgId = displayed.attrs.id;
-                    this.readStatus[msgId] = true;
-                    this.deliveryStatus[msgId] = 'read';
-                    this.emit('read_update', { msgId, status: 'read' });
+                    this.setLastReadMessage(from, msgId);
+                    this.emit('read_update', { msgId, contactJid: from });
                 }
 
                 if (stanza.getChild('body')) {
@@ -184,14 +212,9 @@ class XmppService extends EventEmitter {
         }
     }
 
-    getMessageStatus(msgId) {
-        return this.deliveryStatus[msgId] || 'sent';
-    }
-
     markAsRead(jid, msgId) {
         if (!this.isConnected || !msgId) return;
         this.clearUnread(jid);
-        // Отправляем маркер прочтения
         this.xmpp.send(xml('message', { to: jid, type: 'chat', id: uuidv4() },
             xml('displayed', { xmlns: 'urn:xmpp:chat-markers:0', id: msgId })
         ));
@@ -220,7 +243,6 @@ class XmppService extends EventEmitter {
         ));
         const bareJid = to.split('/')[0];
         this.lastMessages[bareJid] = { body: text, timestamp: new Date(), type: 'out' };
-        this.deliveryStatus[id] = 'sent';
         this.emit('last_message_update', bareJid);
         return id;
     }
@@ -257,8 +279,7 @@ class XmppService extends EventEmitter {
                                     body,
                                     from: msg.attrs.from.split('/')[0],
                                     timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
-                                    type: isOut ? 'out' : 'in',
-                                    status: 'delivered'
+                                    type: isOut ? 'out' : 'in'
                                 });
                             }
                         }
