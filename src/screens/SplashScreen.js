@@ -44,14 +44,43 @@ const SplashScreen = ({ navigation }) => {
       const pass = await StorageService.getItem('userPass');
 
       if (jid && pass) {
-        XmppService.once('online', () => navigation.replace('ChatList'));
-        XmppService.once('error', () => navigation.replace('Login'));
+        let resolved = false;
+        
+        const onOnline = () => {
+          if (resolved) return;
+          resolved = true;
+          cleanup();
+          navigation.replace('ChatList');
+        };
+        
+        const onError = () => {
+          if (resolved) return;
+          resolved = true;
+          cleanup();
+          navigation.replace('Login');
+        };
+
+        const cleanup = () => {
+          XmppService.off('online', onOnline);
+          XmppService.off('error', onError);
+        };
+        
+        XmppService.on('online', onOnline);
+        XmppService.on('error', onError);
         XmppService.connect(jid, pass);
-        setTimeout(() => navigation.replace('Login'), 5000);
+        
+        setTimeout(() => {
+          if (!resolved) {
+            resolved = true;
+            cleanup();
+            navigation.replace('Login');
+          }
+        }, 7000);
       } else {
         setTimeout(() => navigation.replace('Login'), 2000);
       }
     };
+    
     checkAutoLogin();
   }, []);
 

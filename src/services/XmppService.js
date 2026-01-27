@@ -25,11 +25,16 @@ class XmppService extends EventEmitter {
         this.deliveryStatus = {}; 
         this.readStatus = {};
         this.userJid = '';
+        this.userPassword = '';
+        this.reconnectTimer = null;
+        this.reconnectAttempts = 0;
     }
 
     connect(jid, password) {
         if (this.xmpp) this.disconnect();
         this.userJid = jid;
+        this.userPassword = password;
+        this.reconnectAttempts = 0;
 
         const [local, domain] = jid.split('@');
         const cleanDomain = domain ? domain.split('/')[0] : '';
@@ -43,13 +48,33 @@ class XmppService extends EventEmitter {
             password: password,
         });
 
-        this.xmpp.on('error', (err) => this.emit('error', err));
+        this.xmpp.on('error', (err) => {
+            console.log('XMPP Error:', err);
+            this.emit('error', err);
+            this.scheduleReconnect();
+        });
+
+        this.xmpp.on('offline', () => {
+            console.log('XMPP Offline');
+            this.isConnected = false;
+            this.scheduleReconnect();
+        });
+        
         this.xmpp.on('status', (status) => {
+            console.log('XMPP Status:', status);
             this.isConnected = (status === 'online');
+            if (this.isConnected) {
+                this.reconnectAttempts = 0;
+                if (this.reconnectTimer) {
+                    clearTimeout(this.reconnectTimer);
+                    this.reconnectTimer = null;
+                }
+            }
             this.emit('status', status);
         });
 
         this.xmpp.on('online', async (address) => {
+            console.log('XMPP Online:', address);
             await this.xmpp.send(xml('presence'));
             this.emit('online', address);
             setTimeout(() => this.loadAllHistory(), 1000);
@@ -63,7 +88,7 @@ class XmppService extends EventEmitter {
                     await this.xmpp.send(xml('presence', { to: from, type: 'subscribed' }));
                 } else if (stanza.attrs.type === 'unavailable') {
                     this.presenceMap[from] = 'offline';
-                } else if (!stanza.attrs.type) {
+                } else if (!stanza.attrs.type && from !== this.userJid) {
                     this.presenceMap[from] = 'online';
                 }
                 this.emit('presence_update', { jid: from, status: this.presenceMap[from] });
@@ -92,6 +117,7 @@ class XmppService extends EventEmitter {
                 if (displayed) {
                     const msgId = displayed.attrs.id;
                     this.readStatus[msgId] = true;
+                    this.deliveryStatus[msgId] = 'read';
                     this.emit('read_update', { msgId, status: 'read' });
                 }
 
@@ -101,9 +127,9 @@ class XmppService extends EventEmitter {
                     
                     this.lastMessages[from] = { body, timestamp: new Date(), type: 'in' };
                     this.unreadCounts[from] = (this.unreadCounts[from] || 0) + 1;
-                    
+
                     if (stanza.getChild('request', 'urn:xmpp:receipts')) {
-                        this.xmpp.send(xml('message', { to: stanza.attrs.from, id: uuidv4() },
+                        await this.xmpp.send(xml('message', { to: stanza.attrs.from, type: 'chat', id: uuidv4() },
                             xml('received', { xmlns: 'urn:xmpp:receipts', id: msgId })
                         ));
                     }
@@ -118,7 +144,28 @@ class XmppService extends EventEmitter {
             }
         });
 
-        this.xmpp.start().catch(() => {});
+        this.xmpp.start().catch((err) => {
+            console.error('Failed to start XMPP:', err);
+            this.scheduleReconnect();
+        });
+    }
+
+    scheduleReconnect() {
+        if (this.reconnectTimer) return;
+        if (this.reconnectAttempts >= 10) return;
+
+        this.reconnectAttempts++;
+        const delay = Math.min(this.reconnectAttempts * 2000, 30000);
+
+        console.log(`Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        
+        this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            if (this.userJid && this.userPassword) {
+                console.log('Attempting to reconnect...');
+                this.connect(this.userJid, this.userPassword);
+            }
+        }, delay);
     }
 
     async loadAllHistory() {
@@ -138,15 +185,14 @@ class XmppService extends EventEmitter {
     }
 
     getMessageStatus(msgId) {
-        if (this.readStatus[msgId]) return 'read';
-        if (this.deliveryStatus[msgId] === 'delivered') return 'delivered';
-        return 'sent';
+        return this.deliveryStatus[msgId] || 'sent';
     }
 
     markAsRead(jid, msgId) {
-        if (!this.isConnected) return;
+        if (!this.isConnected || !msgId) return;
         this.clearUnread(jid);
-        this.xmpp.send(xml('message', { to: jid, type: 'chat' },
+        // Отправляем маркер прочтения
+        this.xmpp.send(xml('message', { to: jid, type: 'chat', id: uuidv4() },
             xml('displayed', { xmlns: 'urn:xmpp:chat-markers:0', id: msgId })
         ));
     }
@@ -204,13 +250,14 @@ class XmppService extends EventEmitter {
                         const delay = result.getChild('forwarded', 'urn:xmpp:forward:0')?.getChild('delay', 'urn:xmpp:delay');
                         if (body) {
                             const msgId = result.attrs.id || uuidv4();
+                            const isOut = msg.attrs.from.split('/')[0] !== bareJid;
                             history.push({
                                 id: msgId,
                                 body,
                                 from: msg.attrs.from.split('/')[0],
                                 timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
-                                type: msg.attrs.from.split('/')[0] === bareJid ? 'in' : 'out',
-                                status: this.getMessageStatus(msgId)
+                                type: isOut ? 'out' : 'in',
+                                status: isOut ? 'delivered' : 'delivered'
                             });
                         }
                     }
@@ -251,7 +298,15 @@ class XmppService extends EventEmitter {
     }
 
     disconnect() {
-        if (this.xmpp) { this.xmpp.stop().catch(() => {}); this.xmpp = null; this.isConnected = false; }
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        if (this.xmpp) { 
+            this.xmpp.stop().catch(() => {}); 
+            this.xmpp = null; 
+            this.isConnected = false; 
+        }
     }
 }
 

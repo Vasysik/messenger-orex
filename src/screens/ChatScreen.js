@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
+import { 
+  View, Text, StyleSheet, TextInput, TouchableOpacity, FlatList, 
+  KeyboardAvoidingView, Platform, InputAccessoryView, Keyboard
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppColors } from '../constants/Colors';
 import XmppService from '../services/XmppService';
@@ -9,29 +12,53 @@ const ChatScreen = ({ route, navigation }) => {
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState('');
   const [typing, setTyping] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const listRef = useRef();
+  const lastIncomingMsgId = useRef(null);
+
+  useEffect(() => {
+    const keyboardWillShow = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      (e) => setKeyboardHeight(e.endCoordinates.height)
+    );
+    const keyboardWillHide = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      () => setKeyboardHeight(0)
+    );
+
+    return () => {
+      keyboardWillShow.remove();
+      keyboardWillHide.remove();
+    };
+  }, []);
 
   useEffect(() => {
     navigation.setOptions({
       headerTitle: () => (
         <View>
-          <Text style={{color:'#fff', fontWeight:'bold'}}>{contact.name}</Text>
-          {typing && <Text style={{color:'#FFA500', fontSize:11}}>печатает...</Text>}
+          <Text style={{color:'#fff', fontWeight:'bold', fontSize: 17}}>{contact.name}</Text>
+          {typing && <Text style={{color: AppColors.typing, fontSize: 12}}>печатает...</Text>}
         </View>
       ),
       headerStyle: { backgroundColor: AppColors.darkWalnut },
     });
+    
     const load = async () => { 
       const history = await XmppService.fetchHistory(contact.jid);
       setMessages(history);
-      if (history.length > 0 && history[history.length - 1].type === 'in') {
-        XmppService.markAsRead(contact.jid, history[history.length - 1].id);
+      for (let i = history.length - 1; i >= 0; i--) {
+        if (history[i].type === 'in') {
+          lastIncomingMsgId.current = history[i].id;
+          XmppService.markAsRead(contact.jid, history[i].id);
+          break;
+        }
       }
     };
     load();
 
     const onMsg = (m) => {
       if (m.from === contact.jid) {
+        lastIncomingMsgId.current = m.id;
         setMessages(p => [...p, { ...m, type: 'in', status: 'delivered' }]);
         XmppService.markAsRead(contact.jid, m.id);
       }
@@ -58,71 +85,194 @@ const ChatScreen = ({ route, navigation }) => {
     setMessages(p => [...p, { id, body: text, type: 'out', timestamp: new Date(), status: 'sent' }]);
     setText('');
     XmppService.sendTypingStatus(contact.jid, false);
+    setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
   };
 
   const getStatusIcon = (status) => {
-    if (status === 'read') return '✓✓';
-    if (status === 'delivered') return '✓';
-    return '✓';
+    switch(status) {
+      case 'read': return '✓✓';
+      case 'delivered': return '✓✓';
+      default: return '✓';
+    }
   };
 
-  const getStatusColor = (status) => {
-    if (status === 'read') return '#4FC3F7';
-    return 'rgba(255,255,255,0.6)';
+  const renderMessage = ({item}) => {
+    const isOut = item.type === 'out';
+    return (
+      <View style={[styles.msgWrapper, isOut ? styles.msgWrapperOut : styles.msgWrapperIn]}>
+        {isOut ? (
+          <LinearGradient 
+            colors={[AppColors.lightBrown, AppColors.primaryBrown]} 
+            style={styles.msgOut}
+          >
+            <Text style={styles.msgTextOut}>{item.body}</Text>
+            <View style={styles.msgFooter}>
+              <Text style={styles.timeOut}>
+                {new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+              </Text>
+              <Text style={styles.tick}>{getStatusIcon(item.status)}</Text>
+            </View>
+          </LinearGradient>
+        ) : (
+          <View style={styles.msgIn}>
+            <Text style={styles.msgTextIn}>{item.body}</Text>
+            <Text style={styles.timeIn}>
+              {new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}
+            </Text>
+          </View>
+        )}
+      </View>
+    );
   };
 
   return (
-    <KeyboardAvoidingView style={{flex:1, backgroundColor: AppColors.cream}} behavior={Platform.OS === 'ios' ? 'padding' : null} keyboardVerticalOffset={90}>
-      <LinearGradient colors={[AppColors.cream, AppColors.backgroundWhite]} style={{flex:1}}>
-        <FlatList ref={listRef} data={messages} keyExtractor={i => i.id} renderItem={({item}) => {
-          const isOut = item.type === 'out';
-          return isOut ? (
-            <LinearGradient colors={[AppColors.lightBrown, AppColors.primaryBrown]} style={[styles.msg, styles.out]}>
-              <Text style={styles.msgTextOut}>{item.body}</Text>
-              <View style={styles.footer}>
-                <Text style={styles.timeOut}>{new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</Text>
-                <Text style={[styles.tick, {color: getStatusColor(item.status)}]}>
-                  {getStatusIcon(item.status)}
-                </Text>
-              </View>
-            </LinearGradient>
-          ) : (
-            <View style={[styles.msg, styles.in]}>
-              <Text style={styles.msgTextIn}>{item.body}</Text>
-              <View style={styles.footer}>
-                <Text style={styles.timeIn}>{new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</Text>
-              </View>
-            </View>
-          );
-        }} onContentSizeChange={() => listRef.current?.scrollToEnd()} />
-      </LinearGradient>
-      <View style={styles.inputBar}>
-        <TextInput style={styles.input} value={text} onChangeText={t => { setText(t); XmppService.sendTypingStatus(contact.jid, t.length > 0); }} placeholder="Сообщение..." placeholderTextColor="#999" multiline />
-        <TouchableOpacity onPress={send} style={styles.sBtn}>
-          <LinearGradient colors={text.trim() ? [AppColors.lightBrown, AppColors.primaryBrown] : ['#ccc', '#aaa']} style={styles.sBtnGradient}>
-            <Text style={styles.sBtnTxt}>↑</Text>
+    <View style={styles.container}>
+      <FlatList 
+        ref={listRef} 
+        data={messages} 
+        keyExtractor={i => i.id} 
+        renderItem={renderMessage}
+        contentContainerStyle={[
+          styles.messagesList,
+          { paddingBottom: keyboardHeight > 0 ? 10 : 10 }
+        ]}
+        onContentSizeChange={() => listRef.current?.scrollToEnd()}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+      />
+      
+      <View style={[styles.inputBar, { marginBottom: keyboardHeight > 0 ? keyboardHeight : 0 }]}>
+        <TextInput 
+          style={styles.input} 
+          value={text} 
+          onChangeText={t => { 
+            setText(t); 
+            XmppService.sendTypingStatus(contact.jid, t.length > 0); 
+          }} 
+          placeholder="Сообщение..." 
+          placeholderTextColor={AppColors.textLight}
+          multiline 
+          maxLength={1000}
+        />
+        <TouchableOpacity onPress={send} disabled={!text.trim()}>
+          <LinearGradient 
+            colors={text.trim() ? [AppColors.lightBrown, AppColors.primaryBrown] : ['#ccc', '#aaa']} 
+            style={styles.sendBtn}
+          >
+            <Text style={styles.sendBtnTxt}>↑</Text>
           </LinearGradient>
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 };
 
 const styles = StyleSheet.create({
-  msg: { paddingHorizontal: 14, paddingVertical: 10, borderRadius: 20, marginVertical: 4, maxWidth: '80%', marginHorizontal: 15 },
-  out: { alignSelf: 'flex-end', shadowColor: AppColors.primaryBrown, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 4, elevation: 3 },
-  in: { alignSelf: 'flex-start', backgroundColor: '#fff', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
-  msgTextOut: { fontSize: 16, color: '#fff', lineHeight: 22 },
-  msgTextIn: { fontSize: 16, color: AppColors.darkWalnut, lineHeight: 22 },
-  footer: { flexDirection: 'row', alignSelf: 'flex-end', alignItems: 'center', marginTop: 4 },
-  timeOut: { fontSize: 11, color: 'rgba(255,255,255,0.7)' },
-  timeIn: { fontSize: 11, color: '#999' },
-  tick: { fontSize: 11, marginLeft: 3 },
-  inputBar: { flexDirection: 'row', padding: 12, paddingBottom: Platform.OS === 'ios' ? 25 : 12, backgroundColor: '#fff', alignItems: 'flex-end', borderTopWidth: 1, borderTopColor: '#f0f0f0' },
-  input: { flex: 1, backgroundColor: AppColors.cream, borderRadius: 25, paddingHorizontal: 18, paddingVertical: 12, fontSize: 16, maxHeight: 120, borderWidth: 1, borderColor: AppColors.sand },
-  sBtn: { marginLeft: 10, borderRadius: 25, overflow: 'hidden' },
-  sBtnGradient: { width: 50, height: 50, justifyContent: 'center', alignItems: 'center' },
-  sBtnTxt: { color: '#fff', fontSize: 24, fontWeight: 'bold' }
+  container: { 
+    flex: 1, 
+    backgroundColor: AppColors.backgroundWhite 
+  },
+  messagesList: {
+    padding: 15,
+  },
+  msgWrapper: {
+    marginVertical: 3,
+  },
+  msgWrapperIn: {
+    alignItems: 'flex-start'
+  },
+  msgWrapperOut: {
+    alignItems: 'flex-end'
+  },
+  msgOut: {
+    paddingHorizontal: 14, 
+    paddingVertical: 10, 
+    borderRadius: 18,
+    borderBottomRightRadius: 4,
+    maxWidth: '80%',
+    shadowColor: AppColors.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 2
+  },
+  msgIn: {
+    paddingHorizontal: 14, 
+    paddingVertical: 10, 
+    borderRadius: 18,
+    borderBottomLeftRadius: 4,
+    maxWidth: '80%',
+    backgroundColor: '#fff',
+    shadowColor: AppColors.shadow,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 1
+  },
+  msgTextOut: {
+    fontSize: 16,
+    color: '#fff',
+    lineHeight: 21
+  },
+  msgTextIn: {
+    fontSize: 16,
+    color: AppColors.darkWalnut,
+    lineHeight: 21
+  },
+  msgFooter: {
+    flexDirection: 'row',
+    alignSelf: 'flex-end',
+    alignItems: 'center',
+    marginTop: 4,
+    gap: 4
+  },
+  timeOut: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.7)'
+  },
+  timeIn: {
+    fontSize: 11,
+    color: AppColors.textLight,
+    alignSelf: 'flex-end',
+    marginTop: 4
+  },
+  tick: {
+    fontSize: 12,
+    color: 'rgba(255,255,255,0.8)'
+  },
+  inputBar: {
+    flexDirection: 'row',
+    padding: 12,
+    backgroundColor: '#fff',
+    borderTopWidth: 1,
+    borderTopColor: AppColors.sand,
+    alignItems: 'flex-end',
+    gap: 10
+  },
+  input: {
+    flex: 1,
+    backgroundColor: AppColors.cream,
+    borderRadius: 22,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    fontSize: 16,
+    maxHeight: 100,
+    borderWidth: 1,
+    borderColor: AppColors.sand,
+    color: AppColors.darkWalnut
+  },
+  sendBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  sendBtnTxt: {
+    color: '#fff',
+    fontSize: 22,
+    fontWeight: 'bold'
+  }
 });
 
 export default ChatScreen;
