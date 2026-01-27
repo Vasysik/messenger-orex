@@ -17,6 +17,7 @@ class XmppService extends EventEmitter {
     constructor() {
         super();
         this.xmpp = null;
+        this.isConnected = false;
     }
 
     connect(jid, password) {
@@ -34,20 +35,62 @@ class XmppService extends EventEmitter {
             password: password,
         });
 
-        this.xmpp.on('error', (err) => this.emit('error', err));
-        this.xmpp.on('status', (status) => this.emit('status', status));
+        this.xmpp.on('error', (err) => {
+            console.error('XMPP Error:', err);
+            this.emit('error', err);
+        });
+
         this.xmpp.on('online', async (address) => {
+            this.isConnected = true;
             await this.xmpp.send(xml('presence'));
             this.emit('online', address);
         });
-        this.xmpp.on('stanza', (stanza) => this.emit('stanza', stanza));
+
+        this.xmpp.on('stanza', (stanza) => {
+            if (stanza.is('message') && stanza.getChild('body')) {
+                const messageData = {
+                    id: stanza.attrs.id || Math.random().toString(),
+                    from: stanza.attrs.from.split('/')[0],
+                    body: stanza.getChildText('body'),
+                    timestamp: new Date(),
+                };
+                this.emit('message', messageData);
+            }
+            this.emit('stanza', stanza);
+        });
+
         this.xmpp.start().catch((e) => this.emit('error', e));
+    }
+
+    async getRoster() {
+        const id = 'roster_' + Math.random().toString(36).substr(2, 9);
+        const iq = xml('iq', { type: 'get', id }, xml('query', { xmlns: 'jabber:iq:roster' }));
+        
+        const response = await this.xmpp.sendIQ(iq);
+        const items = response.getChild('query').getChildren('item');
+        
+        return items.map(item => ({
+            jid: item.attrs.jid,
+            name: item.attrs.name || item.attrs.jid.split('@')[0],
+            subscription: item.attrs.subscription
+        }));
+    }
+
+    sendMessage(to, text) {
+        if (!this.isConnected) return;
+        const message = xml(
+            'message',
+            { to, type: 'chat', id: uuidv4() },
+            xml('body', {}, text)
+        );
+        this.xmpp.send(message);
     }
 
     disconnect() {
         if (this.xmpp) {
             this.xmpp.stop().catch(() => {});
             this.xmpp = null;
+            this.isConnected = false;
         }
         this.emit('status', 'disconnect');
     }
