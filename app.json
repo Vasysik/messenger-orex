@@ -13,14 +13,21 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#8B4513"
-      }
+      },
+      "package": "com.vasys.messengerorex"
     },
     "web": {
       "output": "single",
       "favicon": "./assets/images/icon.png"
     },
     "plugins": [
-      "expo-secure-store"
-    ]
+      "expo-secure-store",
+      "expo-font"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8a3e89fd-68e5-41fb-9f4b-354501eac107"
+      }
+    }
   }
 }
