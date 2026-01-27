@@ -1,5 +1,8 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, FlatList, SafeAreaView, ActivityIndicator } from 'react-native';
+import { 
+  View, Text, StyleSheet, TouchableOpacity, FlatList, 
+  SafeAreaView, ActivityIndicator, Alert, Modal, TextInput 
+} from 'react-native';
 import { AppColors } from '../constants/Colors';
 import XmppService from '../services/XmppService';
 import StorageService from '../services/StorageService';
@@ -7,9 +10,17 @@ import StorageService from '../services/StorageService';
 const ChatListScreen = ({ navigation }) => {
   const [contacts, setContacts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [isModalVisible, setModalVisible] = useState(false);
+  const [newContactJid, setNewContactJid] = useState('');
 
   useEffect(() => {
     loadRoster();
+    XmppService.on('online', loadRoster);
+    XmppService.on('roster_update', loadRoster);
+    return () => {
+      XmppService.off('online', loadRoster);
+      XmppService.off('roster_update', loadRoster);
+    };
   }, []);
 
   const loadRoster = async () => {
@@ -17,10 +28,22 @@ const ChatListScreen = ({ navigation }) => {
       const roster = await XmppService.getRoster();
       setContacts(roster);
     } catch (err) {
-      console.log('Ошибка ростера:', err);
+      console.log('Roster error', err);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleAddContact = () => {
+    if (!newContactJid.includes('@')) {
+      Alert.alert("Ошибка", "Введите корректный JID (например, orekh@xmpp.jp)");
+      return;
+    }
+    XmppService.addContact(newContactJid);
+    setModalVisible(false);
+    setNewContactJid('');
+    Alert.alert("Успех", "Запрос отправлен");
+    setTimeout(loadRoster, 1500);
   };
 
   const handleLogout = async () => {
@@ -36,7 +59,7 @@ const ChatListScreen = ({ navigation }) => {
       onPress={() => navigation.navigate('Chat', { contact: item })}
     >
       <View style={styles.avatar}>
-        <Text style={styles.avatarText}>{item.name[0].toUpperCase()}</Text>
+        <Text style={styles.avatarText}>{item.name[0]?.toUpperCase()}</Text>
       </View>
       <View style={styles.contactInfo}>
         <Text style={styles.contactName}>{item.name}</Text>
@@ -47,11 +70,40 @@ const ChatListScreen = ({ navigation }) => {
 
   return (
     <SafeAreaView style={styles.container}>
+      {/* Модалка добавления контакта */}
+      <Modal visible={isModalVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Добавить ореха</Text>
+            <TextInput
+              style={styles.modalInput}
+              placeholder="user@server.com"
+              value={newContactJid}
+              onChangeText={setNewContactJid}
+              autoCapitalize="none"
+            />
+            <View style={styles.modalButtons}>
+              <TouchableOpacity onPress={() => setModalVisible(false)} style={styles.modalBtn}>
+                <Text style={{color: '#666'}}>Отмена</Text>
+              </TouchableOpacity>
+              <TouchableOpacity onPress={handleAddContact} style={[styles.modalBtn, styles.modalBtnMain]}>
+                <Text style={{color: '#fff', fontWeight: 'bold'}}>Добавить</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Орехи</Text>
-        <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
-          <Text style={styles.logoutText}>Выйти</Text>
-        </TouchableOpacity>
+        <View style={styles.headerBtns}>
+          <TouchableOpacity onPress={() => setModalVisible(true)} style={styles.addBtn}>
+            <Text style={styles.addBtnText}>+</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
+            <Text style={styles.logoutText}>Выйти</Text>
+          </TouchableOpacity>
+        </View>
       </View>
       
       {loading ? (
@@ -61,7 +113,7 @@ const ChatListScreen = ({ navigation }) => {
           data={contacts}
           keyExtractor={(item) => item.jid}
           renderItem={renderItem}
-          ListEmptyComponent={<Text style={styles.emptyText}>Контактов пока нет</Text>}
+          ListEmptyComponent={<Text style={styles.emptyText}>У вас пока нет контактов</Text>}
         />
       )}
     </SafeAreaView>
@@ -71,7 +123,10 @@ const ChatListScreen = ({ navigation }) => {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#fff' },
   header: { height: 60, backgroundColor: AppColors.primaryBrown, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 15 },
-  headerTitle: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
+  headerTitle: { color: '#fff', fontSize: 22, fontWeight: 'bold' },
+  headerBtns: { flexDirection: 'row', alignItems: 'center' },
+  addBtn: { marginRight: 20, padding: 5 },
+  addBtnText: { color: '#fff', fontSize: 28, fontWeight: '300' },
   logoutBtn: { padding: 8, borderRadius: 5, backgroundColor: 'rgba(255,255,255,0.2)' },
   logoutText: { color: '#fff', fontWeight: 'bold' },
   contactItem: { flexDirection: 'row', padding: 15, borderBottomWidth: 1, borderBottomColor: '#eee', alignItems: 'center' },
@@ -80,7 +135,16 @@ const styles = StyleSheet.create({
   contactInfo: { marginLeft: 15 },
   contactName: { fontSize: 16, fontWeight: 'bold', color: '#333' },
   contactJid: { fontSize: 13, color: '#999' },
-  emptyText: { textAlign: 'center', marginTop: 50, color: '#999' }
+  emptyText: { textAlign: 'center', marginTop: 50, color: '#999' },
+  
+  // Стили модалки
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
+  modalContent: { width: '80%', backgroundColor: '#fff', borderRadius: 15, padding: 20, elevation: 5 },
+  modalTitle: { fontSize: 18, fontWeight: 'bold', marginBottom: 15, textAlign: 'center' },
+  modalInput: { borderWidth: 1, borderColor: '#ddd', borderRadius: 10, padding: 10, marginBottom: 20 },
+  modalButtons: { flexDirection: 'row', justifyContent: 'flex-end' },
+  modalBtn: { padding: 10, marginLeft: 10, borderRadius: 5 },
+  modalBtnMain: { backgroundColor: AppColors.primaryBrown }
 });
 
 export default ChatListScreen;
