@@ -240,7 +240,7 @@ class XmppService extends EventEmitter {
         );
 
         return new Promise((resolve) => {
-            const history = [];
+            const historyMap = new Map();
             const onStanza = (stanza) => {
                 if (stanza.is('message')) {
                     const result = stanza.getChild('result', 'urn:xmpp:mam:2');
@@ -249,27 +249,33 @@ class XmppService extends EventEmitter {
                         const body = msg?.getChildText('body');
                         const delay = result.getChild('forwarded', 'urn:xmpp:forward:0')?.getChild('delay', 'urn:xmpp:delay');
                         if (body) {
-                            const msgId = result.attrs.id || uuidv4();
+                            const msgId = msg.attrs.id || result.attrs.id || uuidv4();
                             const isOut = msg.attrs.from.split('/')[0] !== bareJid;
-                            history.push({
-                                id: msgId,
-                                body,
-                                from: msg.attrs.from.split('/')[0],
-                                timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
-                                type: isOut ? 'out' : 'in',
-                                status: isOut ? 'delivered' : 'delivered'
-                            });
+                            if (!historyMap.has(msgId)) {
+                                historyMap.set(msgId, {
+                                    id: msgId,
+                                    body,
+                                    from: msg.attrs.from.split('/')[0],
+                                    timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
+                                    type: isOut ? 'out' : 'in',
+                                    status: 'delivered'
+                                });
+                            }
                         }
                     }
                 }
                 if (stanza.is('iq') && stanza.attrs.id === id) {
                     this.xmpp.off('stanza', onStanza);
-                    resolve(history.sort((a, b) => a.timestamp - b.timestamp));
+                    const history = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
+                    resolve(history);
                 }
             };
             this.xmpp.on('stanza', onStanza);
             this.xmpp.send(iq);
-            setTimeout(() => { this.xmpp.off('stanza', onStanza); resolve(history); }, 5000);
+            setTimeout(() => { 
+                this.xmpp.off('stanza', onStanza); 
+                resolve(Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp)); 
+            }, 5000);
         });
     }
 

@@ -71,7 +71,7 @@ const ChatScreen = ({ route, navigation }) => {
 
   const getStatus = s => s === 'read' || s === 'delivered' ? '✓✓' : '✓';
 
-  const renderMessage = ({item}) => {
+  const renderMessage = ({item, index}) => {
     const isOut = item.type === 'out';
     const time = new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     
@@ -100,7 +100,7 @@ const ChatScreen = ({ route, navigation }) => {
       <FlatList 
         ref={listRef} 
         data={messages} 
-        keyExtractor={i => i.id} 
+        keyExtractor={(item, index) => `${item.id}_${index}`}
         renderItem={renderMessage}
         contentContainerStyle={styles.messagesList}
         onContentSizeChange={() => listRef.current?.scrollToEnd()}

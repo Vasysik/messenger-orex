@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { 
-  View, Text, TouchableOpacity, FlatList, SafeAreaView, 
+  View, Text, TouchableOpacity, FlatList, 
   ActivityIndicator, Modal, TextInput, StatusBar
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppColors } from '../constants/Colors';
 import { CommonStyles } from '../styles/CommonStyles';
