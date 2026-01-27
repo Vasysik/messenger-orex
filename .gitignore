@@ -21,3 +21,4 @@ yarn-error.*
 /ios
 /android
 package-lock.json
+.vscode
