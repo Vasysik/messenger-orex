@@ -4,8 +4,8 @@
   "version": "1.0.0",
   "scripts": {
     "start": "expo start",
-    "android": "expo start --android",
-    "ios": "expo start --ios",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
     "web": "expo start --web"
   },
   "dependencies": {
@@ -13,6 +13,7 @@
     "@react-navigation/native": "^7.1.28",
     "@react-navigation/stack": "^7.6.16",
     "@xmpp/client": "^0.14.0",
+    "big-integer": "^1.6.52",
     "buffer": "^6.0.3",
     "events": "^3.3.0",
     "expo": "~54.0.32",
@@ -20,6 +21,7 @@
     "expo-linear-gradient": "~15.0.8",
     "expo-secure-store": "~15.0.8",
     "expo-status-bar": "~3.0.9",
+    "otr": "^0.2.16",
     "process": "^0.11.10",
     "react": "19.1.0",
     "react-dom": "19.1.0",

@@ -12,6 +12,7 @@
     },
     "android": {
       "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#8B4513"
       },
       "package": "com.vasys.messengerorex"
