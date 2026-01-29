@@ -1,16 +1,33 @@
-import { StyleSheet } from 'react-native';
+import { StyleSheet, Platform } from 'react-native';
 import { AppColors } from '../constants/Colors';
 
 export const ChatStyles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: AppColors.backgroundWhite
+    backgroundColor: AppColors.backgroundWhite,
+    ...(Platform.OS === 'web' && {
+      height: 'calc(100vh - 64px)',
+      position: 'absolute',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      overflow: 'hidden',
+    })
+  },
+  list: {
+    flex: 1,
+    ...(Platform.OS === 'web' && {
+      height: '0px', 
+      flexGrow: 1,
+    })
   },
   messagesList: {
-    padding: 12
+    padding: 12,
+    paddingBottom: 20
   },
   msgWrapper: {
-    marginVertical: 2
+    marginVertical: 3
   },
   msgWrapperIn: {
     alignItems: 'flex-start'
@@ -23,7 +40,7 @@ export const ChatStyles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 16,
     borderBottomRightRadius: 4,
-    maxWidth: '78%',
+    maxWidth: '80%',
     shadowColor: AppColors.shadow,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.12,
@@ -35,7 +52,7 @@ export const ChatStyles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 16,
     borderBottomLeftRadius: 4,
-    maxWidth: '78%',
+    maxWidth: '80%',
     backgroundColor: '#fff',
     shadowColor: AppColors.shadow,
     shadowOffset: { width: 0, height: 1 },
@@ -57,8 +74,8 @@ export const ChatStyles = StyleSheet.create({
     flexDirection: 'row',
     alignSelf: 'flex-end',
     alignItems: 'center',
-    marginTop: 3,
-    gap: 3
+    marginTop: 4,
+    gap: 4
   },
   timeOut: {
     fontSize: 10,
@@ -68,10 +85,10 @@ export const ChatStyles = StyleSheet.create({
     fontSize: 10,
     color: AppColors.textLight,
     alignSelf: 'flex-end',
-    marginTop: 3
+    marginTop: 4
   },
   tick: {
-    fontSize: 11,
+    fontSize: 12,
     color: 'rgba(255,255,255,0.8)'
   },
   inputBar: {
@@ -88,9 +105,9 @@ export const ChatStyles = StyleSheet.create({
     backgroundColor: AppColors.cream,
     borderRadius: 20,
     paddingHorizontal: 14,
-    paddingVertical: 8,
+    paddingVertical: 10,
     fontSize: 15,
-    maxHeight: 90,
+    maxHeight: 100,
     borderWidth: 1,
     borderColor: AppColors.sand,
     color: AppColors.darkWalnut
@@ -113,16 +130,27 @@ export const ChatStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center'
   },
+  // Улучшенные стили для медиа
   imageAttachment: {
-    width: 200,
-    height: 200,
-    borderRadius: 10,
-    marginTop: 4
+    width: 220,
+    height: 220,
+    borderRadius: 12,
+    marginVertical: 4,
+    backgroundColor: '#f0f0f0' // Placeholder пока грузится
   },
   fileContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    maxWidth: 220,
-    paddingVertical: 4
+    maxWidth: 240,
+    paddingVertical: 6,
+    minHeight: 44
+  },
+  videoThumbnail: {
+    width: 200,
+    height: 150,
+    borderRadius: 10,
+    backgroundColor: '#333',
+    justifyContent: 'center',
+    alignItems: 'center'
   }
 });

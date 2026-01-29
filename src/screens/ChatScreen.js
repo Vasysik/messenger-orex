@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, Keyboard, Platform, Pressable, Clipboard, Alert, Image } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, Keyboard, Platform, Pressable, Clipboard, Alert, Image, Linking } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppColors } from '../constants/Colors';
 import { ChatStyles as styles } from '../styles/ChatStyles';
 import XmppService from '../services/XmppService';
-import MessageStorageService from '../services/MessageStorageService'; // Импорт
-import { Feather, AntDesign } from '@expo/vector-icons';
+import MessageStorageService from '../services/MessageStorageService';
+import { Feather, AntDesign, Ionicons } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-audio';
@@ -19,10 +19,74 @@ const ChatScreen = ({ route, navigation }) => {
   const [lastReadId, setLastReadId] = useState(null);
   const [sound, setSound] = useState();
   const [playingUri, setPlayingUri] = useState(null);
+  const [failedImages, setFailedImages] = useState(new Set()); // Отслеживаем битые картинки
   const listRef = useRef();
   const contactJid = contact.jid.split('/')[0];
 
   const EMOJI_REGEX = /(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/g;
+
+  // Хелперы для определения типа контента
+  const isValidUrl = (str) => {
+    try {
+      return str.startsWith('http://') || str.startsWith('https://');
+    } catch {
+      return false;
+    }
+  };
+
+  const getFileExtension = (url) => {
+    try {
+      // Убираем query параметры и берём расширение
+      const cleanUrl = url.split('?')[0].split('#')[0];
+      const parts = cleanUrl.split('.');
+      if (parts.length > 1) {
+        return parts.pop().toLowerCase();
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  };
+
+  const isImageUrl = (url) => {
+    if (!isValidUrl(url)) return false;
+    const ext = getFileExtension(url);
+    const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico', 'heic', 'heif', 'avif'];
+    
+    // Проверяем по расширению
+    if (imageExtensions.includes(ext)) return true;
+    
+    // Проверяем по содержимому URL (для сервисов без расширения)
+    const urlLower = url.toLowerCase();
+    return urlLower.includes('/image') || 
+           urlLower.includes('img.') || 
+           urlLower.includes('/photo') ||
+           urlLower.includes('content-type=image');
+  };
+
+  const isAudioUrl = (url) => {
+    if (!isValidUrl(url)) return false;
+    const ext = getFileExtension(url);
+    const audioExtensions = ['mp3', 'wav', 'ogg', 'm4a', 'aac', 'flac', 'wma', 'opus'];
+    return audioExtensions.includes(ext);
+  };
+
+  const isVideoUrl = (url) => {
+    if (!isValidUrl(url)) return false;
+    const ext = getFileExtension(url);
+    const videoExtensions = ['mp4', 'webm', 'mov', 'avi', 'mkv', 'm4v', '3gp'];
+    return videoExtensions.includes(ext);
+  };
+
+  const getFileName = (url) => {
+    try {
+      const cleanUrl = url.split('?')[0].split('#')[0];
+      const name = cleanUrl.split('/').pop();
+      return decodeURIComponent(name) || 'Файл';
+    } catch {
+      return 'Файл';
+    }
+  };
 
   useEffect(() => {
     return sound ? () => { sound.unloadAsync(); } : undefined;
@@ -51,7 +115,6 @@ const ChatScreen = ({ route, navigation }) => {
     let isMounted = true;
 
     const initChat = async () => {
-      // 1. Показываем то, что уже есть в телефоне (мгновенно)
       const local = await MessageStorageService.getMessages(contactJid);
       if (isMounted) {
           setMessages(local);
@@ -59,7 +122,6 @@ const ChatScreen = ({ route, navigation }) => {
           setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
       }
 
-      // 2. Докачиваем новые сообщения с сервера
       const fullHistory = await XmppService.fetchHistory(contactJid);
       if (isMounted) {
           setMessages(fullHistory);
@@ -129,7 +191,10 @@ const ChatScreen = ({ route, navigation }) => {
   };
 
   const pickImage = async () => {
-    let result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 1 });
+    let result = await ImagePicker.launchImageLibraryAsync({ 
+      mediaTypes: ['images', 'videos'], // Новый API вместо deprecated MediaTypeOptions
+      quality: 0.8 
+    });
     if (!result.canceled) handleFileUpload(result.assets[0].uri);
   };
 
@@ -169,40 +234,103 @@ const ChatScreen = ({ route, navigation }) => {
     }
   };
 
+  const handleImageError = (uri) => {
+    console.log('Image load failed:', uri);
+    setFailedImages(prev => new Set([...prev, uri]));
+  };
+
+  const openUrl = (url) => {
+    Linking.openURL(url).catch(err => {
+      console.error('Failed to open URL:', err);
+      Alert.alert('Ошибка', 'Не удалось открыть ссылку');
+    });
+  };
+
   const renderMessageContent = (item) => {
     const isOut = item.type === 'out';
     const uri = item.body;
-    const isUrl = uri.startsWith('http');
-    const isImage = isUrl && /\.(jpeg|jpg|gif|png|bmp|webp)$/i.test(uri);
-    const isAudio = isUrl && /\.(m4a|mp3|wav|aac|ogg)$/i.test(uri);
+    const textColor = isOut ? '#fff' : AppColors.darkWalnut;
+    const iconColor = isOut ? '#fff' : AppColors.primaryBrown;
 
-    if (isImage) return <Image source={{ uri }} style={styles.imageAttachment} resizeMode="cover" />;
-    if (isAudio) {
-        const isPlaying = playingUri === uri;
-        const playAudio = async () => {
-            if (sound) await sound.unloadAsync();
-            if (isPlaying) { setPlayingUri(null); return; }
-            const { sound: newSound } = await Audio.Sound.createAsync({ uri });
-            setSound(newSound);
-            setPlayingUri(uri);
-            await newSound.playAsync();
-        };
-        return (
-            <TouchableOpacity onPress={playAudio} style={styles.fileContainer}>
-                <AntDesign name={isPlaying ? "pausecircleo" : "playcircleo"} size={32} color={isOut ? "#fff" : AppColors.primaryBrown} />
-                <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}> Аудиофайл</Text>
-            </TouchableOpacity>
-        );
+    // Не URL — просто текст
+    if (!isValidUrl(uri)) {
+      return <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}>{item.body}</Text>;
     }
-    if (isUrl) {
-        return (
-            <View style={styles.fileContainer}>
-                <AntDesign name="file1" size={30} color={isOut ? "#fff" : AppColors.primaryBrown} />
-                <Text style={[isOut ? styles.msgTextOut : styles.msgTextIn, {marginLeft: 8}]} numberOfLines={2}>{decodeURIComponent(uri.split('/').pop())}</Text>
-            </View>
-        );
+
+    // Изображение (включая GIF)
+    if (isImageUrl(uri) && !failedImages.has(uri)) {
+      return (
+        <TouchableOpacity onPress={() => openUrl(uri)} activeOpacity={0.9}>
+          <Image 
+            source={{ uri }} 
+            style={styles.imageAttachment} 
+            resizeMode="cover"
+            onError={() => handleImageError(uri)}
+          />
+        </TouchableOpacity>
+      );
     }
-    return <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}>{item.body}</Text>;
+
+    // Аудио
+    if (isAudioUrl(uri)) {
+      const isPlaying = playingUri === uri;
+      const playAudio = async () => {
+        try {
+          if (sound) await sound.unloadAsync();
+          if (isPlaying) { setPlayingUri(null); return; }
+          const { sound: newSound } = await Audio.Sound.createAsync({ uri });
+          setSound(newSound);
+          setPlayingUri(uri);
+          await newSound.playAsync();
+          newSound.setOnPlaybackStatusUpdate((status) => {
+            if (status.didJustFinish) setPlayingUri(null);
+          });
+        } catch (e) {
+          console.error('Audio play error:', e);
+          Alert.alert('Ошибка', 'Не удалось воспроизвести аудио');
+        }
+      };
+      return (
+        <TouchableOpacity onPress={playAudio} style={styles.fileContainer}>
+          <AntDesign name={isPlaying ? "pausecircleo" : "playcircleo"} size={32} color={iconColor} />
+          <Text style={[isOut ? styles.msgTextOut : styles.msgTextIn, {marginLeft: 8, flex: 1}]} numberOfLines={1}>
+            {getFileName(uri)}
+          </Text>
+        </TouchableOpacity>
+      );
+    }
+
+    // Видео
+    if (isVideoUrl(uri)) {
+      return (
+        <TouchableOpacity onPress={() => openUrl(uri)} style={styles.fileContainer}>
+          <Ionicons name="videocam-outline" size={30} color={iconColor} />
+          <View style={{marginLeft: 8, flex: 1}}>
+            <Text style={[isOut ? styles.msgTextOut : styles.msgTextIn]} numberOfLines={1}>
+              {getFileName(uri)}
+            </Text>
+            <Text style={{color: isOut ? 'rgba(255,255,255,0.7)' : '#999', fontSize: 11}}>
+              Нажмите для просмотра
+            </Text>
+          </View>
+        </TouchableOpacity>
+      );
+    }
+
+    // Общий файл / битая картинка / ссылка
+    return (
+      <TouchableOpacity onPress={() => openUrl(uri)} style={styles.fileContainer}>
+        <Feather name="file" size={28} color={iconColor} />
+        <View style={{marginLeft: 8, flex: 1}}>
+          <Text style={[isOut ? styles.msgTextOut : styles.msgTextIn]} numberOfLines={2}>
+            {getFileName(uri)}
+          </Text>
+          <Text style={{color: isOut ? 'rgba(255,255,255,0.7)' : '#999', fontSize: 11}}>
+            Нажмите для открытия
+          </Text>
+        </View>
+      </TouchableOpacity>
+    );
   };
 
   const renderMessage = useCallback(({item, index}) => {
@@ -211,37 +339,43 @@ const ChatScreen = ({ route, navigation }) => {
     const status = getMessageStatus(item, index, messages);
     
     return (
-        <Pressable onLongPress={() => !item.body.startsWith('http') && Clipboard.setString(item.body)}>
-            <View style={[styles.msgWrapper, isOut ? styles.msgWrapperOut : styles.msgWrapperIn]}>
-                {isOut ? (
-                <LinearGradient colors={[AppColors.lightBrown, AppColors.primaryBrown]} style={styles.msgOut}>
-                    {renderMessageContent(item)}
-                    <View style={styles.msgFooter}>
-                    <Text style={styles.timeOut}>{time}</Text>
-                    <Text style={[styles.tick, { color: getTickColor(status) }]}>✓</Text>
-                    </View>
-                </LinearGradient>
-                ) : (
-                <View style={styles.msgIn}>
-                    {renderMessageContent(item)}
-                    <Text style={styles.timeIn}>{time}</Text>
-                </View>
-                )}
+      <Pressable onLongPress={() => {
+        if (!isValidUrl(item.body)) {
+          Clipboard.setString(item.body);
+          Alert.alert('', 'Скопировано в буфер');
+        }
+      }}>
+        <View style={[styles.msgWrapper, isOut ? styles.msgWrapperOut : styles.msgWrapperIn]}>
+          {isOut ? (
+            <LinearGradient colors={[AppColors.lightBrown, AppColors.primaryBrown]} style={styles.msgOut}>
+              {renderMessageContent(item)}
+              <View style={styles.msgFooter}>
+                <Text style={styles.timeOut}>{time}</Text>
+                <Text style={[styles.tick, { color: getTickColor(status) }]}>✓</Text>
+              </View>
+            </LinearGradient>
+          ) : (
+            <View style={styles.msgIn}>
+              {renderMessageContent(item)}
+              <Text style={styles.timeIn}>{time}</Text>
             </View>
+          )}
+        </View>
       </Pressable>
     );
-  }, [messages, lastReadId, playingUri]);
+  }, [messages, lastReadId, playingUri, failedImages]);
 
   return (
     <View style={styles.container}>
       <FlatList 
-        ref={listRef} 
+        ref={listRef}
+        style={styles.list}
         data={messages} 
         keyExtractor={(item, index) => item.id || `${index}`}
         renderItem={renderMessage}
         contentContainerStyle={styles.messagesList}
         keyboardShouldPersistTaps="handled"
-        extraData={lastReadId}
+        extraData={[lastReadId, playingUri, failedImages]}
       />
       <View style={[styles.inputBar, Platform.OS !== 'web' && { marginBottom: keyboardHeight }]}>
         <TouchableOpacity onPress={showAttachmentMenu} style={styles.attachBtn}>
