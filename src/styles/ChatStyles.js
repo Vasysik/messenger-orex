@@ -106,5 +106,23 @@ export const ChatStyles = StyleSheet.create({
     color: '#fff',
     fontSize: 20,
     fontWeight: 'bold'
+  },
+  attachBtn: {
+    width: 40,
+    height: 40,
+    justifyContent: 'center',
+    alignItems: 'center'
+  },
+  imageAttachment: {
+    width: 200,
+    height: 200,
+    borderRadius: 10,
+    marginTop: 4
+  },
+  fileContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: 220,
+    paddingVertical: 4
   }
 });

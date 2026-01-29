@@ -1,9 +1,13 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, Keyboard, Platform } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, Keyboard, Platform, Pressable, Clipboard, Alert, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppColors } from '../constants/Colors';
 import { ChatStyles as styles } from '../styles/ChatStyles';
 import XmppService from '../services/XmppService';
+import { Feather, AntDesign } from '@expo/vector-icons';
+import * as ImagePicker from 'expo-image-picker';
+import * as DocumentPicker from 'expo-document-picker';
+import { Audio } from 'expo-audio';
 
 const ChatScreen = ({ route, navigation }) => {
   const { contact } = route.params;
@@ -12,8 +16,16 @@ const ChatScreen = ({ route, navigation }) => {
   const [typing, setTyping] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   const [lastReadId, setLastReadId] = useState(null);
+  const [sound, setSound] = useState();
+  const [playingUri, setPlayingUri] = useState(null);
   const listRef = useRef();
   const contactJid = contact.jid.split('/')[0];
+
+  const EMOJI_REGEX = /(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/g;
+
+  useEffect(() => {
+    return sound ? () => { sound.unloadAsync(); } : undefined;
+  }, [sound]);
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
@@ -102,12 +114,13 @@ const ChatScreen = ({ route, navigation }) => {
   }, [contactJid]);
 
   const send = useCallback(() => {
-    if (!text.trim()) return;
-    const id = XmppService.sendMessage(contactJid, text);
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const id = XmppService.sendMessage(contactJid, trimmed);
     if (id) {
       setMessages(prev => [...prev, { 
         id, 
-        body: text, 
+        body: trimmed, 
         type: 'out', 
         timestamp: new Date()
       }]);
@@ -116,10 +129,58 @@ const ChatScreen = ({ route, navigation }) => {
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
     }
   }, [text, contactJid]);
+  
+  const handleFileUpload = async (uri) => {
+    const uploadedUrl = await XmppService.uploadFile(uri);
+    if (uploadedUrl) {
+      const id = XmppService.sendMessage(contactJid, uploadedUrl);
+      if (id) {
+          setMessages(prev => [...prev, { 
+              id, 
+              body: uploadedUrl,
+              type: 'out', 
+              timestamp: new Date()
+          }]);
+          setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
+      }
+    } else {
+      Alert.alert("Ошибка", "Не удалось загрузить файл.");
+    }
+  };
+
+  const pickImage = async () => {
+    let result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.All,
+        quality: 1,
+    });
+    if (!result.canceled) {
+        handleFileUpload(result.assets[0].uri);
+    }
+  };
+
+  const pickDocument = async () => {
+      let result = await DocumentPicker.getDocumentAsync({});
+      if (!result.canceled) {
+          handleFileUpload(result.assets[0].uri);
+      }
+  };
+
+  const showAttachmentMenu = () => {
+    Alert.alert(
+        "Отправить файл",
+        "Выберите тип файла",
+        [
+            { text: "Изображение/Видео", onPress: pickImage },
+            { text: "Документ", onPress: pickDocument },
+            { text: "Отмена", style: "cancel" }
+        ]
+    );
+  };
 
   const handleTextChange = useCallback((t) => {
-    setText(t);
-    XmppService.sendTypingStatus(contactJid, t.length > 0);
+    const filteredText = t.replace(EMOJI_REGEX, '');
+    setText(filteredText);
+    XmppService.sendTypingStatus(contactJid, filteredText.length > 0);
   }, [contactJid]);
 
   const getMessageStatus = useCallback((msg, index, allMessages) => {
@@ -138,30 +199,77 @@ const ChatScreen = ({ route, navigation }) => {
     }
   };
 
+  const renderMessageContent = (item) => {
+    const isOut = item.type === 'out';
+    const uri = item.body;
+    const isUrl = uri.startsWith('http');
+    const isImage = isUrl && /\.(jpeg|jpg|gif|png|bmp)$/i.test(uri);
+    const isAudio = isUrl && /\.(m4a|mp3|wav|aac|ogg)$/i.test(uri);
+
+    if (isImage) {
+        return <Image source={{ uri }} style={styles.imageAttachment} resizeMode="cover" />;
+    }
+
+    if (isAudio) {
+        const isPlaying = playingUri === uri;
+        const playAudio = async () => {
+            if (sound) await sound.unloadAsync();
+            if (isPlaying) {
+                setPlayingUri(null);
+                return;
+            }
+            const { sound: newSound } = await Audio.Sound.createAsync({ uri });
+            setSound(newSound);
+            setPlayingUri(uri);
+            await newSound.playAsync();
+        };
+        return (
+            <TouchableOpacity onPress={playAudio} style={styles.fileContainer}>
+                <AntDesign name={isPlaying ? "pausecircleo" : "playcircleo"} size={32} color={isOut ? "#fff" : AppColors.primaryBrown} />
+                <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}>Аудиофайл</Text>
+            </TouchableOpacity>
+        );
+    }
+
+    if (isUrl) {
+        const fileName = uri.split('/').pop();
+        return (
+            <View style={styles.fileContainer}>
+                <AntDesign name="file1" size={30} color={isOut ? "#fff" : AppColors.primaryBrown} />
+                <Text style={[isOut ? styles.msgTextOut : styles.msgTextIn, {marginLeft: 8}]} numberOfLines={2}>{decodeURIComponent(fileName)}</Text>
+            </View>
+        );
+    }
+    
+    return <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}>{item.body}</Text>;
+  };
+
   const renderMessage = useCallback(({item, index}) => {
     const isOut = item.type === 'out';
     const time = new Date(item.timestamp).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
     const status = getMessageStatus(item, index, messages);
     
     return (
-      <View style={[styles.msgWrapper, isOut ? styles.msgWrapperOut : styles.msgWrapperIn]}>
-        {isOut ? (
-          <LinearGradient colors={[AppColors.lightBrown, AppColors.primaryBrown]} style={styles.msgOut}>
-            <Text style={styles.msgTextOut}>{item.body}</Text>
-            <View style={styles.msgFooter}>
-              <Text style={styles.timeOut}>{time}</Text>
-              <Text style={[styles.tick, { color: getTickColor(status) }]}>✓</Text>
+        <Pressable onLongPress={() => !item.body.startsWith('http') && Clipboard.setString(item.body)}>
+            <View style={[styles.msgWrapper, isOut ? styles.msgWrapperOut : styles.msgWrapperIn]}>
+                {isOut ? (
+                <LinearGradient colors={[AppColors.lightBrown, AppColors.primaryBrown]} style={styles.msgOut}>
+                    {renderMessageContent(item)}
+                    <View style={styles.msgFooter}>
+                    <Text style={styles.timeOut}>{time}</Text>
+                    <Text style={[styles.tick, { color: getTickColor(status) }]}>✓</Text>
+                    </View>
+                </LinearGradient>
+                ) : (
+                <View style={styles.msgIn}>
+                    {renderMessageContent(item)}
+                    <Text style={styles.timeIn}>{time}</Text>
+                </View>
+                )}
             </View>
-          </LinearGradient>
-        ) : (
-          <View style={styles.msgIn}>
-            <Text style={styles.msgTextIn}>{item.body}</Text>
-            <Text style={styles.timeIn}>{time}</Text>
-          </View>
-        )}
-      </View>
+      </Pressable>
     );
-  }, [messages, lastReadId, getMessageStatus]);
+  }, [messages, lastReadId, getMessageStatus, playingUri]);
 
   return (
     <View style={styles.container}>
@@ -176,6 +284,9 @@ const ChatScreen = ({ route, navigation }) => {
         extraData={lastReadId}
       />
       <View style={[styles.inputBar, Platform.OS !== 'web' && { marginBottom: keyboardHeight }]}>
+        <TouchableOpacity onPress={showAttachmentMenu} style={styles.attachBtn}>
+            <Feather name="paperclip" size={22} color={AppColors.primaryBrown} />
+        </TouchableOpacity>
         <TextInput 
           style={styles.input} 
           value={text} 

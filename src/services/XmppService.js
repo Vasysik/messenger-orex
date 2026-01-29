@@ -28,28 +28,23 @@ class XmppService extends EventEmitter {
         this.reconnectTimer = null;
         this.reconnectAttempts = 0;
         this.lastReadMessageId = {};
+        this.uploadService = null;
         this.loadLastReadStatuses();
     }
 
     async loadLastReadStatuses() {
         try {
             const saved = await StorageService.getItem('lastReadMessages');
-            if (saved) {
-                this.lastReadMessageId = JSON.parse(saved);
-            }
-        } catch (e) {
-            console.log('Failed to load last read statuses:', e);
-        }
+            if (saved) this.lastReadMessageId = JSON.parse(saved);
+        } catch (e) { console.log('Failed to load last read statuses:', e); }
     }
 
     async saveLastReadStatuses() {
         try {
             await StorageService.setItem('lastReadMessages', JSON.stringify(this.lastReadMessageId));
-        } catch (e) {
-            console.log('Failed to save last read statuses:', e);
-        }
+        } catch (e) { console.log('Failed to save last read statuses:', e); }
     }
-
+    
     setLastReadMessage(contactJid, msgId) {
         const bareJid = contactJid.split('/')[0];
         this.lastReadMessageId[bareJid] = msgId;
@@ -60,6 +55,64 @@ class XmppService extends EventEmitter {
         return this.lastReadMessageId[contactJid.split('/')[0]] || null;
     }
 
+    async uploadFile(uri) {
+        if (!this.uploadService) {
+            console.error("Upload service JID is not set.");
+            return null;
+        }
+
+        const filename = decodeURIComponent(uri.split('/').pop());
+        const fileType = 'application/octet-stream';
+        const fileData = await fetch(uri);
+        const blob = await fileData.blob();
+
+        const id = 'upload_' + uuidv4();
+        const iq = xml('iq', { to: this.uploadService, type: 'get', id },
+            xml('request', { xmlns: 'urn:xmpp:http:upload:0', filename, size: blob.size, 'content-type': fileType })
+        );
+        
+        this.xmpp.send(iq);
+
+        return new Promise((resolve) => {
+            const onStanza = async (stanza) => {
+                if (stanza.is('iq') && stanza.attrs.id === id) {
+                    this.xmpp.off('stanza', onStanza);
+                    const slot = stanza.getChild('slot', 'urn:xmpp:http:upload:0');
+                    if (slot) {
+                        const putUrl = slot.getChild('put').attrs.url;
+                        const getUrl = slot.getChild('get').attrs.url;
+                        
+                        try {
+                            const uploadResponse = await fetch(putUrl, {
+                                method: 'PUT',
+                                headers: { 'Content-Type': fileType },
+                                body: blob,
+                            });
+                            
+                            if (uploadResponse.ok) {
+                                console.log('File uploaded, GET url:', getUrl);
+                                resolve(getUrl);
+                            } else {
+                                const errorText = await uploadResponse.text();
+                                console.error('Upload failed:', uploadResponse.status, errorText);
+                                resolve(null);
+                            }
+                        } catch (e) {
+                            console.error('Error during file upload fetch:', e);
+                            resolve(null);
+                        }
+                    } else {
+                        console.error('Upload slot not provided by server.');
+                        resolve(null);
+                    }
+                }
+            };
+            this.xmpp.on('stanza', onStanza);
+            setTimeout(() => { this.xmpp.off('stanza', onStanza); resolve(null); }, 10000);
+        });
+    }
+
+
     connect(jid, password) {
         if (this.xmpp) this.disconnect();
         this.userJid = jid;
@@ -68,44 +121,26 @@ class XmppService extends EventEmitter {
 
         const [local, domain] = jid.split('@');
         const cleanDomain = domain ? domain.split('/')[0] : '';
+        this.uploadService = cleanDomain; 
         const serviceUrl = `wss://${cleanDomain}:5281/xmpp-websocket`;
         
-        this.xmpp = client({
-            service: serviceUrl,
-            domain: cleanDomain,
-            resource: 'mobile',
-            username: local,
-            password: password,
-        });
+        this.xmpp = client({ service: serviceUrl, domain: cleanDomain, resource: 'mobile', username: local, password: password });
 
-        this.xmpp.on('error', (err) => {
-            console.log('XMPP Error:', err);
-            this.emit('error', err);
-            this.scheduleReconnect();
-        });
-
-        this.xmpp.on('offline', () => {
-            console.log('XMPP Offline');
-            this.isConnected = false;
-            this.scheduleReconnect();
-        });
+        this.xmpp.on('error', (err) => { console.log('XMPP Error:', err); this.emit('error', err); this.scheduleReconnect(); });
+        this.xmpp.on('offline', () => { console.log('XMPP Offline'); this.isConnected = false; this.scheduleReconnect(); });
         
         this.xmpp.on('status', (status) => {
-            console.log('XMPP Status:', status);
             this.isConnected = (status === 'online');
             if (this.isConnected) {
                 this.reconnectAttempts = 0;
-                if (this.reconnectTimer) {
-                    clearTimeout(this.reconnectTimer);
-                    this.reconnectTimer = null;
-                }
+                if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
             }
             this.emit('status', status);
         });
 
         this.xmpp.on('online', async (address) => {
-            console.log('XMPP Online:', address);
             await this.xmpp.send(xml('presence'));
+            console.log('XMPP Online:', address);
             this.emit('online', address);
             setTimeout(() => this.loadAllHistory(), 1000);
         });
@@ -114,99 +149,64 @@ class XmppService extends EventEmitter {
             const from = stanza.attrs.from?.split('/')[0];
 
             if (stanza.is('presence')) {
-                if (stanza.attrs.type === 'subscribe') {
-                    await this.xmpp.send(xml('presence', { to: from, type: 'subscribed' }));
-                } else if (stanza.attrs.type === 'unavailable') {
-                    this.presenceMap[from] = 'offline';
-                } else if (!stanza.attrs.type && from !== this.userJid) {
-                    this.presenceMap[from] = 'online';
-                }
+                if (stanza.attrs.type === 'subscribe') await this.xmpp.send(xml('presence', { to: from, type: 'subscribed' }));
+                else if (stanza.attrs.type === 'unavailable') this.presenceMap[from] = 'offline';
+                else if (!stanza.attrs.type && from !== this.userJid.split('/')[0]) this.presenceMap[from] = 'online';
                 this.emit('presence_update', { jid: from, status: this.presenceMap[from] });
             }
 
             if (stanza.is('message')) {
                 const composing = stanza.getChild('composing', 'http://jabber.org/protocol/chatstates');
-                const active = stanza.getChild('active', 'http://jabber.org/protocol/chatstates');
+                if (composing) this.emit('typing', { jid: from, isTyping: true });
+                else if (stanza.getChild('active') || stanza.getChild('paused')) this.emit('typing', { jid: from, isTyping: false });
                 
-                if (composing) {
-                    this.typingMap[from] = true;
-                    this.emit('typing', { jid: from, isTyping: true });
-                } else if (active || stanza.getChild('paused')) {
-                    this.typingMap[from] = false;
-                    this.emit('typing', { jid: from, isTyping: false });
-                }
-
                 const received = stanza.getChild('received', 'urn:xmpp:receipts');
-                if (received) {
-                    const msgId = received.attrs.id;
-                    this.emit('delivery_update', { msgId, contactJid: from });
-                }
-
+                if (received) this.emit('delivery_update', { msgId: received.attrs.id, contactJid: from });
+                
                 const displayed = stanza.getChild('displayed', 'urn:xmpp:chat-markers:0');
                 if (displayed) {
-                    const msgId = displayed.attrs.id;
-                    this.setLastReadMessage(from, msgId);
-                    this.emit('read_update', { msgId, contactJid: from });
+                    this.setLastReadMessage(from, displayed.attrs.id);
+                    this.emit('read_update', { msgId: displayed.attrs.id, contactJid: from });
                 }
 
                 if (stanza.getChild('body')) {
                     const msgId = stanza.attrs.id || uuidv4();
                     const body = stanza.getChildText('body');
-                    
                     this.lastMessages[from] = { body, timestamp: new Date(), type: 'in' };
                     this.unreadCounts[from] = (this.unreadCounts[from] || 0) + 1;
-
                     if (stanza.getChild('request', 'urn:xmpp:receipts')) {
                         await this.xmpp.send(xml('message', { to: stanza.attrs.from, type: 'chat', id: uuidv4() },
                             xml('received', { xmlns: 'urn:xmpp:receipts', id: msgId })
                         ));
                     }
-                    
                     this.emit('message', { id: msgId, from, body, timestamp: new Date() });
                     this.emit('last_message_update', from);
                 }
             }
-
             if (stanza.is('iq') && stanza.attrs.type === 'set' && stanza.getChild('query', 'jabber:iq:roster')) {
                 this.emit('roster_update');
             }
         });
-
-        this.xmpp.start().catch((err) => {
-            console.error('Failed to start XMPP:', err);
-            this.scheduleReconnect();
-        });
+        this.xmpp.start().catch((err) => { console.error('Failed to start XMPP:', err); this.scheduleReconnect(); });
     }
 
     scheduleReconnect() {
-        if (this.reconnectTimer) return;
-        if (this.reconnectAttempts >= 10) return;
-
+        if (this.reconnectTimer || this.reconnectAttempts >= 10) return;
         this.reconnectAttempts++;
         const delay = Math.min(this.reconnectAttempts * 2000, 30000);
-
-        console.log(`Scheduling reconnect in ${delay}ms (attempt ${this.reconnectAttempts})`);
-        
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
-            if (this.userJid && this.userPassword) {
-                console.log('Attempting to reconnect...');
-                this.connect(this.userJid, this.userPassword);
-            }
+            if (this.userJid && this.userPassword) this.connect(this.userJid, this.userPassword);
         }, delay);
     }
-
+    
     async loadAllHistory() {
         const roster = await this.getRoster();
         for (const contact of roster) {
             const history = await this.fetchHistory(contact.jid);
             if (history.length > 0) {
                 const last = history[history.length - 1];
-                this.lastMessages[contact.jid] = {
-                    body: last.body,
-                    timestamp: last.timestamp,
-                    type: last.type
-                };
+                this.lastMessages[contact.jid] = { body: last.body, timestamp: last.timestamp, type: last.type };
                 this.emit('last_message_update', contact.jid);
             }
         }
@@ -287,16 +287,12 @@ class XmppService extends EventEmitter {
                 }
                 if (stanza.is('iq') && stanza.attrs.id === id) {
                     this.xmpp.off('stanza', onStanza);
-                    const history = Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp);
-                    resolve(history);
+                    resolve(Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp));
                 }
             };
             this.xmpp.on('stanza', onStanza);
             this.xmpp.send(iq);
-            setTimeout(() => { 
-                this.xmpp.off('stanza', onStanza); 
-                resolve(Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp)); 
-            }, 5000);
+            setTimeout(() => { this.xmpp.off('stanza', onStanza); resolve(Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp)); }, 5000);
         });
     }
 
@@ -325,15 +321,8 @@ class XmppService extends EventEmitter {
     }
 
     disconnect() {
-        if (this.reconnectTimer) {
-            clearTimeout(this.reconnectTimer);
-            this.reconnectTimer = null;
-        }
-        if (this.xmpp) { 
-            this.xmpp.stop().catch(() => {}); 
-            this.xmpp = null; 
-            this.isConnected = false; 
-        }
+        if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+        if (this.xmpp) { this.xmpp.stop().catch(() => {}); this.xmpp = null; this.isConnected = false; }
     }
 }
 
