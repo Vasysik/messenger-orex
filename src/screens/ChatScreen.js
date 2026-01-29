@@ -22,8 +22,11 @@ const ChatScreen = ({ route, navigation }) => {
   const [failedImages, setFailedImages] = useState(new Set());
   const [uploadProgress, setUploadProgress] = useState(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
   const listRef = useRef();
   const contactJid = contact.jid.split('/')[0];
+  const initialLoadDone = useRef(false);
 
   const EMOJI_REGEX = /(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/g;
 
@@ -111,17 +114,29 @@ const ChatScreen = ({ route, navigation }) => {
     let isMounted = true;
 
     const initChat = async () => {
+      // Шаг 1: Мгновенно показываем локальные сообщения
       const local = await MessageStorageService.getMessages(contactJid);
       if (isMounted) {
-          setMessages(local);
-          setLastReadId(XmppService.getLastReadMessageId(contactJid));
+        setMessages(local);
+        setLastReadId(XmppService.getLastReadMessageId(contactJid));
+        setIsLoading(false);
+        initialLoadDone.current = true;
       }
 
-      const fullHistory = await XmppService.fetchHistory(contactJid);
-      if (isMounted) {
-          setMessages(fullHistory);
-          const lastIn = fullHistory.filter(m => m.type === 'in').pop();
-          if (lastIn) XmppService.markAsRead(contactJid, lastIn.id);
+      // Шаг 2: Фоновая синхронизация с MAM (не блокирует UI)
+      if (XmppService.isConnected) {
+        setIsSyncing(true);
+        const result = await XmppService.fetchHistory(contactJid);
+        if (isMounted) {
+          setIsSyncing(false);
+          // Обновляем только если есть новые сообщения
+          if (result.newCount > 0) {
+            console.log(`[Chat] Получено ${result.newCount} новых сообщений, обновляю UI`);
+            setMessages(result.messages);
+            const lastIn = result.messages.filter(m => m.type === 'in').pop();
+            if (lastIn) XmppService.markAsRead(contactJid, lastIn.id);
+          }
+        }
       }
     };
     
@@ -364,9 +379,24 @@ const ChatScreen = ({ route, navigation }) => {
       </Pressable>
     );
   }, [messages, lastReadId, playingUri, failedImages]);
+  
+  if (isLoading) {
+    return (
+      <View style={[styles.container, { justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color={AppColors.primaryBrown} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
+      {isSyncing && (
+        <View style={styles.syncIndicator}>
+          <ActivityIndicator size="small" color={AppColors.primaryBrown} />
+          <Text style={styles.syncText}>Синхронизация...</Text>
+        </View>
+      )}
+      
       <FlatList 
         ref={listRef}
         style={styles.list}
@@ -378,6 +408,10 @@ const ChatScreen = ({ route, navigation }) => {
         extraData={[lastReadId, playingUri, failedImages]}
         onContentSizeChange={scrollToBottom}
         onLayout={scrollToBottom}
+        initialNumToRender={20}
+        maxToRenderPerBatch={10}
+        windowSize={10}
+        removeClippedSubviews={Platform.OS !== 'web'}
       />
       
       {isUploading && (

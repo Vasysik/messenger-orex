@@ -191,5 +191,17 @@ export const ChatStyles = StyleSheet.create({
     height: '100%',
     backgroundColor: AppColors.primaryBrown,
     borderRadius: 3
+  },
+  syncIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    backgroundColor: 'rgba(139, 69, 19, 0.1)',
+    gap: 8
+  },
+  syncText: {
+    fontSize: 12,
+    color: AppColors.primaryBrown
   }
 });

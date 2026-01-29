@@ -49,6 +49,11 @@ class XmppService extends EventEmitter {
         this.reconnectAttempts = 0;
         this.lastReadMessageId = {};
         this.uploadService = null;
+        
+        this.lastSyncTime = {};
+        this.syncInProgress = {};
+        this.SYNC_COOLDOWN = 30000;
+        
         this.loadLastReadStatuses();
     }
 
@@ -370,6 +375,9 @@ class XmppService extends EventEmitter {
         this.userJid = jid;
         this.userPassword = password;
         this.reconnectAttempts = 0;
+        
+        this.lastSyncTime = {};
+        this.syncInProgress = {};
 
         const [local, domain] = jid.split('@');
         const cleanDomain = domain ? domain.split('/')[0] : '';
@@ -537,85 +545,129 @@ class XmppService extends EventEmitter {
         return id;
     }
 
-    async fetchHistory(withJid) {
+    async fetchHistory(withJid, forceSync = false) {
         const bareJid = withJid.split('/')[0];
-        
+
         let localMessages = await MessageStorageService.getMessages(bareJid);
         
+        const now = Date.now();
+        const lastSync = this.lastSyncTime[bareJid] || 0;
+        const shouldSync = forceSync || (now - lastSync > this.SYNC_COOLDOWN);
+        
         if (!this.isConnected) {
-            console.log(`Нет подключения, возвращаю ${localMessages.length} локальных сообщений для ${bareJid}`);
-            return localMessages;
+            console.log(`[MAM] Оффлайн, возвращаю ${localMessages.length} локальных сообщений для ${bareJid}`);
+            return { messages: localMessages, isFromCache: true, newCount: 0 };
         }
-
-        const id = 'sync_mam_' + uuidv4();
-        console.log(`Запрашиваю MAM историю для ${bareJid} (ID: ${id})`);
-
-        const queryFields = [
-            xml('field', { var: 'FORM_TYPE', type: 'hidden' }, xml('value', {}, 'urn:xmpp:mam:2')),
-            xml('field', { var: 'with' }, xml('value', {}, bareJid))
-        ];
-
-        const iq = xml('iq', { type: 'set', id },
-            xml('query', { xmlns: 'urn:xmpp:mam:2' },
-                xml('x', { xmlns: 'jabber:x:data', type: 'submit' }, ...queryFields),
-                xml('set', { xmlns: 'http://jabber.org/protocol/rsm' }, 
-                    xml('max', {}, '100'),
-                    xml('before', {}, '')
-                )
-            )
-        );
-
-        return new Promise((resolve) => {
-            const fetched = [];
-            let handled = false;
+        
+        if (this.syncInProgress[bareJid]) {
+            console.log(`[MAM] Синхронизация уже идёт для ${bareJid}`);
+            return { messages: localMessages, isFromCache: true, newCount: 0 };
+        }
+        
+        if (!shouldSync) {
+            console.log(`[MAM] Кулдаун для ${bareJid}, ${Math.round((now - lastSync) / 1000)}с назад`);
+            return { messages: localMessages, isFromCache: true, newCount: 0 };
+        }
+        
+        this.syncInProgress[bareJid] = true;
+        
+        try {
+            const lastTimestamp = await MessageStorageService.getLastMessageTimestamp(bareJid);
             
-            const onStanza = (stanza) => {
-                if (stanza.is('message')) {
-                    const result = stanza.getChild('result', 'urn:xmpp:mam:2');
-                    if (result) {
-                        const forwarded = result.getChild('forwarded', 'urn:xmpp:forward:0');
-                        const msg = forwarded?.getChild('message');
-                        const body = msg?.getChildText('body');
-                        const delay = forwarded?.getChild('delay', 'urn:xmpp:delay');
-                        
-                        if (body) {
-                            const msgId = msg.attrs.id || result.attrs.id || uuidv4();
-                            const fromJid = msg.attrs.from.split('/')[0];
-                            const myBareJid = this.userJid.split('/')[0];
+            const id = 'sync_mam_' + uuidv4();
+            
+            const queryFields = [
+                xml('field', { var: 'FORM_TYPE', type: 'hidden' }, xml('value', {}, 'urn:xmpp:mam:2')),
+                xml('field', { var: 'with' }, xml('value', {}, bareJid))
+            ];
+            
+            if (lastTimestamp) {
+                const startTime = new Date(lastTimestamp.getTime() + 1000);
+                const isoTime = startTime.toISOString();
+                queryFields.push(xml('field', { var: 'start' }, xml('value', {}, isoTime)));
+                console.log(`[MAM] Инкрементальный запрос для ${bareJid} (после ${isoTime}, ID: ${id})`);
+            } else {
+                console.log(`[MAM] Первая загрузка для ${bareJid} (последние 100, ID: ${id})`);
+            }
 
-                            const type = (fromJid === myBareJid) ? 'out' : 'in';
+            const iq = xml('iq', { type: 'set', id },
+                xml('query', { xmlns: 'urn:xmpp:mam:2' },
+                    xml('x', { xmlns: 'jabber:x:data', type: 'submit' }, ...queryFields),
+                    xml('set', { xmlns: 'http://jabber.org/protocol/rsm' }, 
+                        xml('max', {}, '100'),
+                        ...(lastTimestamp ? [] : [xml('before', {}, '')])
+                    )
+                )
+            );
 
-                            fetched.push({
-                                id: msgId,
-                                body,
-                                from: fromJid,
-                                timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
-                                type: type
-                            });
+            return new Promise((resolve) => {
+                const fetched = [];
+                let handled = false;
+                
+                const onStanza = (stanza) => {
+                    if (stanza.is('message')) {
+                        const result = stanza.getChild('result', 'urn:xmpp:mam:2');
+                        if (result) {
+                            const forwarded = result.getChild('forwarded', 'urn:xmpp:forward:0');
+                            const msg = forwarded?.getChild('message');
+                            const body = msg?.getChildText('body');
+                            const delay = forwarded?.getChild('delay', 'urn:xmpp:delay');
+                            
+                            if (body) {
+                                const msgId = msg.attrs.id || result.attrs.id || uuidv4();
+                                const fromJid = msg.attrs.from.split('/')[0];
+                                const myBareJid = this.userJid.split('/')[0];
+                                const type = (fromJid === myBareJid) ? 'out' : 'in';
+
+                                fetched.push({
+                                    id: msgId,
+                                    body,
+                                    from: fromJid,
+                                    timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
+                                    type: type
+                                });
+                            }
                         }
                     }
-                }
-                if (stanza.is('iq') && stanza.attrs.id === id) {
+                    
+                    if (stanza.is('iq') && stanza.attrs.id === id) {
+                        if (handled) return;
+                        handled = true;
+                        this.xmpp.off('stanza', onStanza);
+                        
+                        this.lastSyncTime[bareJid] = Date.now();
+                        this.syncInProgress[bareJid] = false;
+                        
+                        console.log(`[MAM] Получено ${fetched.length} новых сообщений для ${bareJid}`);
+                        
+                        if (fetched.length > 0) {
+                            MessageStorageService.saveMessages(bareJid, fetched).then(async () => {
+                                const allMessages = await MessageStorageService.getMessages(bareJid);
+                                resolve({ messages: allMessages, isFromCache: false, newCount: fetched.length });
+                            });
+                        } else {
+                            resolve({ messages: localMessages, isFromCache: true, newCount: 0 });
+                        }
+                    }
+                };
+                
+                this.xmpp.on('stanza', onStanza);
+                this.xmpp.send(iq);
+                
+                setTimeout(() => { 
                     if (handled) return;
                     handled = true;
                     this.xmpp.off('stanza', onStanza);
-                    console.log(`Получено ${fetched.length} сообщений MAM для ${bareJid}.`);
-                    MessageStorageService.saveMessages(bareJid, fetched).then(async () => {
-                        const allMessages = await MessageStorageService.getMessages(bareJid);
-                        resolve(allMessages);
-                    });
-                }
-            };
-            this.xmpp.on('stanza', onStanza);
-            this.xmpp.send(iq);
-            setTimeout(() => { 
-                if (handled) return;
-                handled = true;
-                this.xmpp.off('stanza', onStanza); 
-                console.warn(`Таймаут получения MAM истории для ${bareJid}. Возвращаю локальные сообщения.`);
-                resolve(localMessages); 
-            }, 5000);
-        });
+                    this.syncInProgress[bareJid] = false;
+                    console.warn(`[MAM] Таймаут для ${bareJid}`);
+                    resolve({ messages: localMessages, isFromCache: true, newCount: 0 }); 
+                }, 10000);
+            });
+        } catch (e) {
+            this.syncInProgress[bareJid] = false;
+            console.error('[MAM] Ошибка:', e);
+            return { messages: localMessages, isFromCache: true, newCount: 0 };
+        }
     }
 
     async getRoster() {

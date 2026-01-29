@@ -8,7 +8,6 @@ const MessageStorageService = {
       const bareJid = jid.split('/')[0];
       const json = await AsyncStorage.getItem(MSG_KEY_PREFIX + bareJid);
       const msgs = json ? JSON.parse(json) : [];
-      // ПРИНУДИТЕЛЬНАЯ СОРТИРОВКА по дате при каждом чтении
       return msgs.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
     } catch (e) {
       console.error('Failed to load local messages', e);
@@ -23,16 +22,10 @@ const MessageStorageService = {
       const existing = await this.getMessages(bareJid);
       
       const map = new Map();
-      // Кладём старые
       existing.forEach(m => map.set(m.id, m));
-      // Накладываем новые (если ID совпадет, перезапишется — это исключит дубли)
       newMsgs.forEach(m => map.set(m.id, m));
-
-      // Превращаем обратно в список и СОРТИРУЕМ
       const merged = Array.from(map.values())
         .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
-
-      // Храним последние 500 для жирности
       const limited = merged.slice(-500);
       
       await AsyncStorage.setItem(MSG_KEY_PREFIX + bareJid, JSON.stringify(limited));
@@ -42,9 +35,20 @@ const MessageStorageService = {
     }
   },
 
+  async getLastMessageTimestamp(jid) {
+    const msgs = await this.getMessages(jid);
+    if (msgs.length === 0) return null;
+    
+    const lastMsg = msgs[msgs.length - 1];
+    const timestamp = new Date(lastMsg.timestamp);
+    
+    if (isNaN(timestamp.getTime())) return null;
+    
+    return timestamp;
+  },
+
   async getLastMessageId(jid) {
     const msgs = await this.getMessages(jid);
-    // Берем ID именно последнего по ВРЕМЕНИ сообщения
     return msgs.length > 0 ? msgs[msgs.length - 1].id : null;
   }
 };
