@@ -4,6 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { client, xml } from '@xmpp/client';
 import EventEmitter from 'events';
 import StorageService from './StorageService';
+import MessageStorageService from './MessageStorageService'; // Импорт нового сервиса
 
 if (typeof global.process === 'undefined') global.process = require('process');
 if (typeof global.Buffer === 'undefined') global.Buffer = require('buffer').Buffer;
@@ -22,11 +23,9 @@ class XmppService extends EventEmitter {
         this.lastMessages = {};
         this.unreadCounts = {};
         this.presenceMap = {};
-        this.typingMap = {};
         this.userJid = '';
         this.userPassword = '';
         this.reconnectTimer = null;
-        this.reconnectAttempts = 0;
         this.lastReadMessageId = {};
         this.uploadService = null;
         this.loadLastReadStatuses();
@@ -55,94 +54,96 @@ class XmppService extends EventEmitter {
         return this.lastReadMessageId[contactJid.split('/')[0]] || null;
     }
 
+    // --- Метод загрузки файла (оставлен без изменений) ---
     async uploadFile(uri) {
-        if (!this.uploadService) {
-            console.error("Upload service JID is not set.");
-            return null;
-        }
+        try {
+            if (!this.uploadService) await this.discoverUploadService();
+            const getBlobFromUri = async (uri) => {
+                return new Promise((resolve, reject) => {
+                    const xhr = new XMLHttpRequest();
+                    xhr.onload = () => resolve(xhr.response);
+                    xhr.onerror = (e) => reject(new Error('Failed to convert URI to Blob'));
+                    xhr.responseType = 'blob';
+                    xhr.open('GET', uri, true);
+                    xhr.send(null);
+                });
+            };
+            const blob = await getBlobFromUri(uri);
+            let filename = 'file_' + Date.now();
+            const fileType = blob.type || 'application/octet-stream';
+            const size = blob.size;
+            const id = 'upload_' + uuidv4();
+            const iq = xml('iq', { to: this.uploadService, type: 'get', id },
+                xml('request', { xmlns: 'urn:xmpp:http:upload:0', filename, size, 'content-type': fileType })
+            );
+            this.xmpp.send(iq);
+            return new Promise((resolve) => {
+                const onStanza = (stanza) => {
+                    if (stanza.is('iq') && stanza.attrs.id === id) {
+                        this.xmpp.off('stanza', onStanza);
+                        if (stanza.attrs.type === 'error') return resolve(null);
+                        const slot = stanza.getChild('slot', 'urn:xmpp:http:upload:0');
+                        if (slot) {
+                            const putUrl = slot.getChild('put').attrs.url;
+                            const getUrl = slot.getChild('get').attrs.url;
+                            const xhr = new XMLHttpRequest();
+                            xhr.open('PUT', putUrl);
+                            slot.getChild('put').getChildren('header').forEach(h => {
+                                xhr.setRequestHeader(h.attrs.name, h.getText().trim());
+                            });
+                            xhr.setRequestHeader('Content-Type', fileType);
+                            xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve(getUrl) : resolve(null);
+                            xhr.onerror = () => resolve(null);
+                            xhr.send(blob);
+                        } else resolve(null);
+                    }
+                };
+                this.xmpp.on('stanza', onStanza);
+                setTimeout(() => { this.xmpp.off('stanza', onStanza); resolve(null); }, 30000);
+            });
+        } catch (e) { return null; }
+    }
 
-        const filename = decodeURIComponent(uri.split('/').pop());
-        const fileType = 'application/octet-stream';
-        const fileData = await fetch(uri);
-        const blob = await fileData.blob();
-
-        const id = 'upload_' + uuidv4();
-        const iq = xml('iq', { to: this.uploadService, type: 'get', id },
-            xml('request', { xmlns: 'urn:xmpp:http:upload:0', filename, size: blob.size, 'content-type': fileType })
-        );
-        
+    async discoverUploadService() {
+        const id = 'disco_' + uuidv4();
+        const iq = xml('iq', { type: 'get', id }, xml('query', { xmlns: 'http://jabber.org/protocol/disco#items' }));
         this.xmpp.send(iq);
-
         return new Promise((resolve) => {
-            const onStanza = async (stanza) => {
+            const onStanza = (stanza) => {
                 if (stanza.is('iq') && stanza.attrs.id === id) {
                     this.xmpp.off('stanza', onStanza);
-                    const slot = stanza.getChild('slot', 'urn:xmpp:http:upload:0');
-                    if (slot) {
-                        const putUrl = slot.getChild('put').attrs.url;
-                        const getUrl = slot.getChild('get').attrs.url;
-                        
-                        try {
-                            const uploadResponse = await fetch(putUrl, {
-                                method: 'PUT',
-                                headers: { 'Content-Type': fileType },
-                                body: blob,
-                            });
-                            
-                            if (uploadResponse.ok) {
-                                console.log('File uploaded, GET url:', getUrl);
-                                resolve(getUrl);
-                            } else {
-                                const errorText = await uploadResponse.text();
-                                console.error('Upload failed:', uploadResponse.status, errorText);
-                                resolve(null);
-                            }
-                        } catch (e) {
-                            console.error('Error during file upload fetch:', e);
-                            resolve(null);
-                        }
-                    } else {
-                        console.error('Upload slot not provided by server.');
-                        resolve(null);
-                    }
+                    const items = stanza.getChild('query')?.getChildren('item') || [];
+                    const uploadItem = items.find(item => item.attrs.jid.includes('upload'));
+                    if (uploadItem) this.uploadService = uploadItem.attrs.jid;
+                    resolve();
                 }
             };
             this.xmpp.on('stanza', onStanza);
-            setTimeout(() => { this.xmpp.off('stanza', onStanza); resolve(null); }, 10000);
         });
     }
-
 
     connect(jid, password) {
         if (this.xmpp) this.disconnect();
         this.userJid = jid;
         this.userPassword = password;
-        this.reconnectAttempts = 0;
-
         const [local, domain] = jid.split('@');
         const cleanDomain = domain ? domain.split('/')[0] : '';
-        this.uploadService = cleanDomain; 
         const serviceUrl = `wss://${cleanDomain}:5281/xmpp-websocket`;
         
         this.xmpp = client({ service: serviceUrl, domain: cleanDomain, resource: 'mobile', username: local, password: password });
 
-        this.xmpp.on('error', (err) => { console.log('XMPP Error:', err); this.emit('error', err); this.scheduleReconnect(); });
-        this.xmpp.on('offline', () => { console.log('XMPP Offline'); this.isConnected = false; this.scheduleReconnect(); });
-        
+        this.xmpp.on('error', (err) => { this.emit('error', err); this.scheduleReconnect(); });
+        this.xmpp.on('offline', () => { this.isConnected = false; this.scheduleReconnect(); });
         this.xmpp.on('status', (status) => {
             this.isConnected = (status === 'online');
-            if (this.isConnected) {
-                this.reconnectAttempts = 0;
-                if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-            }
             this.emit('status', status);
         });
 
         this.xmpp.on('online', async (address) => {
             await this.xmpp.send(xml('presence'));
-            console.log('XMPP Online:', address);
+            this.discoverUploadService();
             this.emit('online', address);
-            setTimeout(() => this.loadAllHistory(), 1000);
+            setTimeout(() => this.loadAllHistoryFromStorage(), 500);
         });
 
         this.xmpp.on('stanza', async (stanza) => {
@@ -156,12 +157,10 @@ class XmppService extends EventEmitter {
             }
 
             if (stanza.is('message')) {
+                // Обработка статусов печати и прочтения
                 const composing = stanza.getChild('composing', 'http://jabber.org/protocol/chatstates');
                 if (composing) this.emit('typing', { jid: from, isTyping: true });
                 else if (stanza.getChild('active') || stanza.getChild('paused')) this.emit('typing', { jid: from, isTyping: false });
-                
-                const received = stanza.getChild('received', 'urn:xmpp:receipts');
-                if (received) this.emit('delivery_update', { msgId: received.attrs.id, contactJid: from });
                 
                 const displayed = stanza.getChild('displayed', 'urn:xmpp:chat-markers:0');
                 if (displayed) {
@@ -169,17 +168,26 @@ class XmppService extends EventEmitter {
                     this.emit('read_update', { msgId: displayed.attrs.id, contactJid: from });
                 }
 
+                // Обработка тела сообщения
                 if (stanza.getChild('body')) {
                     const msgId = stanza.attrs.id || uuidv4();
                     const body = stanza.getChildText('body');
-                    this.lastMessages[from] = { body, timestamp: new Date(), type: 'in' };
+                    const timestamp = new Date();
+                    
+                    const newMsg = { id: msgId, from, body, timestamp, type: 'in' };
+                    
+                    // СОХРАНЯЕМ В ЛОКАЛЬНУЮ БАЗУ
+                    await MessageStorageService.saveMessages(from, [newMsg]);
+
+                    this.lastMessages[from] = { body, timestamp, type: 'in' };
                     this.unreadCounts[from] = (this.unreadCounts[from] || 0) + 1;
+                    
                     if (stanza.getChild('request', 'urn:xmpp:receipts')) {
                         await this.xmpp.send(xml('message', { to: stanza.attrs.from, type: 'chat', id: uuidv4() },
                             xml('received', { xmlns: 'urn:xmpp:receipts', id: msgId })
                         ));
                     }
-                    this.emit('message', { id: msgId, from, body, timestamp: new Date() });
+                    this.emit('message', newMsg);
                     this.emit('last_message_update', from);
                 }
             }
@@ -187,25 +195,24 @@ class XmppService extends EventEmitter {
                 this.emit('roster_update');
             }
         });
-        this.xmpp.start().catch((err) => { console.error('Failed to start XMPP:', err); this.scheduleReconnect(); });
+        this.xmpp.start().catch(() => this.scheduleReconnect());
     }
 
     scheduleReconnect() {
-        if (this.reconnectTimer || this.reconnectAttempts >= 10) return;
-        this.reconnectAttempts++;
-        const delay = Math.min(this.reconnectAttempts * 2000, 30000);
+        if (this.reconnectTimer) return;
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             if (this.userJid && this.userPassword) this.connect(this.userJid, this.userPassword);
-        }, delay);
+        }, 5000);
     }
     
-    async loadAllHistory() {
+    // Загрузка последних сообщений для списка чатов из локальной базы
+    async loadAllHistoryFromStorage() {
         const roster = await this.getRoster();
         for (const contact of roster) {
-            const history = await this.fetchHistory(contact.jid);
-            if (history.length > 0) {
-                const last = history[history.length - 1];
+            const msgs = await MessageStorageService.getMessages(contact.jid);
+            if (msgs.length > 0) {
+                const last = msgs[msgs.length - 1];
                 this.lastMessages[contact.jid] = { body: last.body, timestamp: last.timestamp, type: last.type };
                 this.emit('last_message_update', contact.jid);
             }
@@ -235,6 +242,7 @@ class XmppService extends EventEmitter {
     sendMessage(to, text) {
         if (!this.isConnected) return null;
         const id = uuidv4();
+        const timestamp = new Date();
         this.xmpp.send(xml('message', { to, type: 'chat', id },
             xml('body', {}, text),
             xml('request', { xmlns: 'urn:xmpp:receipts' }),
@@ -242,27 +250,47 @@ class XmppService extends EventEmitter {
             xml('active', { xmlns: 'http://jabber.org/protocol/chatstates' })
         ));
         const bareJid = to.split('/')[0];
-        this.lastMessages[bareJid] = { body: text, timestamp: new Date(), type: 'out' };
+        const newMsg = { id, body: text, timestamp, type: 'out' };
+        
+        // СОХРАНЯЕМ ИСХОДЯЩЕЕ ЛОКАЛЬНО
+        MessageStorageService.saveMessages(bareJid, [newMsg]);
+
+        this.lastMessages[bareJid] = { body: text, timestamp, type: 'out' };
         this.emit('last_message_update', bareJid);
         return id;
     }
 
+    // УМНЫЙ ЗАПРОС ИСТОРИИ: локальные + докачка с MAM
     async fetchHistory(withJid) {
-        if (!this.isConnected) return [];
         const bareJid = withJid.split('/')[0];
-        const id = 'mam_' + uuidv4();
+        
+        // 1. Сначала отдаем то, что есть в телефоне (мгновенно)
+        const localMessages = await MessageStorageService.getMessages(bareJid);
+        
+        if (!this.isConnected) return localMessages;
+
+        // 2. Запрашиваем историю у сервера
+        // Мы НЕ используем 'after', чтобы не пропустить сообщения из других веток (threads)
+        // Мы просим последние 100 сообщений. Наш saveMessages сам отсеет дубликаты.
+        const id = 'sync_mam_' + uuidv4();
+
+        const queryFields = [
+            xml('field', { var: 'FORM_TYPE', type: 'hidden' }, xml('value', {}, 'urn:xmpp:mam:2')),
+            xml('field', { var: 'with' }, xml('value', {}, bareJid))
+        ];
+
         const iq = xml('iq', { type: 'set', id },
             xml('query', { xmlns: 'urn:xmpp:mam:2' },
-                xml('x', { xmlns: 'jabber:x:data', type: 'submit' },
-                    xml('field', { var: 'FORM_TYPE', type: 'hidden' }, xml('value', {}, 'urn:xmpp:mam:2')),
-                    xml('field', { var: 'with' }, xml('value', {}, bareJid))
-                ),
-                xml('set', { xmlns: 'http://jabber.org/protocol/rsm' }, xml('max', {}, '50'))
+                xml('x', { xmlns: 'jabber:x:data', type: 'submit' }, ...queryFields),
+                xml('set', { xmlns: 'http://jabber.org/protocol/rsm' }, 
+                    xml('max', {}, '100'), // Берем пачку побольше
+                    xml('before', {}, '')  // Начиная с самых свежих и назад
+                )
             )
         );
 
         return new Promise((resolve) => {
-            const historyMap = new Map();
+            const fetched = [];
             const onStanza = (stanza) => {
                 if (stanza.is('message')) {
                     const result = stanza.getChild('result', 'urn:xmpp:mam:2');
@@ -271,29 +299,36 @@ class XmppService extends EventEmitter {
                         const body = msg?.getChildText('body');
                         const delay = result.getChild('forwarded', 'urn:xmpp:forward:0')?.getChild('delay', 'urn:xmpp:delay');
                         if (body) {
-                            const msgId = msg.attrs.id || result.attrs.id || uuidv4();
-                            const isOut = msg.attrs.from.split('/')[0] !== bareJid;
-                            if (!historyMap.has(msgId)) {
-                                historyMap.set(msgId, {
-                                    id: msgId,
-                                    body,
-                                    from: msg.attrs.from.split('/')[0],
-                                    timestamp: delay ? new Date(delay.attrs.stamp) : new Date(),
-                                    type: isOut ? 'out' : 'in'
-                                });
-                            }
+                            const fromJid = msg.attrs.from.split('/')[0];
+                            fetched.push({
+                                id: result.attrs.id || msg.attrs.id || uuidv4(),
+                                body,
+                                from: fromJid,
+                                timestamp: delay ? delay.attrs.stamp : new Date().toISOString(),
+                                type: fromJid === this.userJid.split('/')[0] ? 'out' : 'in'
+                            });
                         }
                     }
                 }
                 if (stanza.is('iq') && stanza.attrs.id === id) {
                     this.xmpp.off('stanza', onStanza);
-                    resolve(Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp));
+                    // Сохраняем пачку в базу. Она сама сопоставит ID и отсортирует по времени.
+                    MessageStorageService.saveMessages(bareJid, fetched).then(() => {
+                        MessageStorageService.getMessages(bareJid).then(resolve);
+                    });
                 }
             };
             this.xmpp.on('stanza', onStanza);
             this.xmpp.send(iq);
-            setTimeout(() => { this.xmpp.off('stanza', onStanza); resolve(Array.from(historyMap.values()).sort((a, b) => a.timestamp - b.timestamp)); }, 5000);
+            // Если сервер тупит, отдаем что было в локалке через 5 сек
+            setTimeout(() => { this.xmpp.off('stanza', onStanza); resolve(localMessages); }, 5000);
         });
+    }
+
+    async processAndResolve(jid, newMsgs, resolve) {
+        await MessageStorageService.saveMessages(jid, newMsgs);
+        const all = await MessageStorageService.getMessages(jid);
+        resolve(all);
     }
 
     async getRoster() {

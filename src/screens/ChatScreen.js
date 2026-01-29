@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { AppColors } from '../constants/Colors';
 import { ChatStyles as styles } from '../styles/ChatStyles';
 import XmppService from '../services/XmppService';
+import MessageStorageService from '../services/MessageStorageService'; // Импорт
 import { Feather, AntDesign } from '@expo/vector-icons';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
@@ -29,15 +30,8 @@ const ChatScreen = ({ route, navigation }) => {
 
   useEffect(() => {
     if (Platform.OS === 'web') return;
-    
-    const show = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', 
-      e => setKeyboardHeight(e.endCoordinates.height)
-    );
-    const hide = Keyboard.addListener(
-      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', 
-      () => setKeyboardHeight(0)
-    );
+    const show = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', e => setKeyboardHeight(e.endCoordinates.height));
+    const hide = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide', () => setKeyboardHeight(0));
     return () => { show.remove(); hide.remove(); };
   }, []);
 
@@ -56,33 +50,33 @@ const ChatScreen = ({ route, navigation }) => {
   useEffect(() => {
     let isMounted = true;
 
-    const loadHistory = async () => { 
-      try {
-        const savedLastReadId = XmppService.getLastReadMessageId(contactJid);
-        if (isMounted) setLastReadId(savedLastReadId);
-        
-        const history = await XmppService.fetchHistory(contactJid);
-        if (isMounted) {
-          setMessages(history);
-          const lastIn = history.filter(m => m.type === 'in').pop();
-          if (lastIn) {
-            XmppService.markAsRead(contactJid, lastIn.id);
-          }
-          setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 100);
-        }
-      } catch (err) {
-        console.error('Failed to load history:', err);
+    const initChat = async () => {
+      // 1. Показываем то, что уже есть в телефоне (мгновенно)
+      const local = await MessageStorageService.getMessages(contactJid);
+      if (isMounted) {
+          setMessages(local);
+          setLastReadId(XmppService.getLastReadMessageId(contactJid));
+          setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
+      }
+
+      // 2. Докачиваем новые сообщения с сервера
+      const fullHistory = await XmppService.fetchHistory(contactJid);
+      if (isMounted) {
+          setMessages(fullHistory);
+          const lastIn = fullHistory.filter(m => m.type === 'in').pop();
+          if (lastIn) XmppService.markAsRead(contactJid, lastIn.id);
+          setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
       }
     };
     
-    loadHistory();
+    initChat();
 
     const onMessage = (m) => {
       const fromBare = m.from.split('/')[0];
       if (fromBare === contactJid) {
         setMessages(prev => {
           if (prev.some(msg => msg.id === m.id)) return prev;
-          return [...prev, { ...m, type: 'in' }];
+          return [...prev, m];
         });
         XmppService.markAsRead(contactJid, m.id);
         setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
@@ -90,15 +84,11 @@ const ChatScreen = ({ route, navigation }) => {
     };
 
     const onTyping = (data) => {
-      if (data.jid.split('/')[0] === contactJid) {
-        setTyping(data.isTyping);
-      }
+      if (data.jid.split('/')[0] === contactJid) setTyping(data.isTyping);
     };
 
     const onRead = (data) => {
-      if (data.contactJid === contactJid) {
-        setLastReadId(data.msgId);
-      }
+      if (data.contactJid === contactJid) setLastReadId(data.msgId);
     };
 
     XmppService.on('message', onMessage);
@@ -118,12 +108,7 @@ const ChatScreen = ({ route, navigation }) => {
     if (!trimmed) return;
     const id = XmppService.sendMessage(contactJid, trimmed);
     if (id) {
-      setMessages(prev => [...prev, { 
-        id, 
-        body: trimmed, 
-        type: 'out', 
-        timestamp: new Date()
-      }]);
+      setMessages(prev => [...prev, { id, body: trimmed, type: 'out', timestamp: new Date() }]);
       setText('');
       XmppService.sendTypingStatus(contactJid, false);
       setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
@@ -135,12 +120,7 @@ const ChatScreen = ({ route, navigation }) => {
     if (uploadedUrl) {
       const id = XmppService.sendMessage(contactJid, uploadedUrl);
       if (id) {
-          setMessages(prev => [...prev, { 
-              id, 
-              body: uploadedUrl,
-              type: 'out', 
-              timestamp: new Date()
-          }]);
+          setMessages(prev => [...prev, { id, body: uploadedUrl, type: 'out', timestamp: new Date() }]);
           setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
       }
     } else {
@@ -149,32 +129,22 @@ const ChatScreen = ({ route, navigation }) => {
   };
 
   const pickImage = async () => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.All,
-        quality: 1,
-    });
-    if (!result.canceled) {
-        handleFileUpload(result.assets[0].uri);
-    }
+    let result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ImagePicker.MediaTypeOptions.All, quality: 1 });
+    if (!result.canceled) handleFileUpload(result.assets[0].uri);
   };
 
   const pickDocument = async () => {
       let result = await DocumentPicker.getDocumentAsync({});
-      if (!result.canceled) {
-          handleFileUpload(result.assets[0].uri);
-      }
+      if (!result.canceled) handleFileUpload(result.assets[0].uri);
   };
 
   const showAttachmentMenu = () => {
-    Alert.alert(
-        "Отправить файл",
-        "Выберите тип файла",
-        [
-            { text: "Изображение/Видео", onPress: pickImage },
-            { text: "Документ", onPress: pickDocument },
-            { text: "Отмена", style: "cancel" }
-        ]
-    );
+    if (Platform.OS === 'web') { pickImage(); return; }
+    Alert.alert("Отправить файл", "Выберите тип файла", [
+        { text: "Изображение/Видео", onPress: pickImage },
+        { text: "Документ", onPress: pickDocument },
+        { text: "Отмена", style: "cancel" }
+    ]);
   };
 
   const handleTextChange = useCallback((t) => {
@@ -203,21 +173,15 @@ const ChatScreen = ({ route, navigation }) => {
     const isOut = item.type === 'out';
     const uri = item.body;
     const isUrl = uri.startsWith('http');
-    const isImage = isUrl && /\.(jpeg|jpg|gif|png|bmp)$/i.test(uri);
+    const isImage = isUrl && /\.(jpeg|jpg|gif|png|bmp|webp)$/i.test(uri);
     const isAudio = isUrl && /\.(m4a|mp3|wav|aac|ogg)$/i.test(uri);
 
-    if (isImage) {
-        return <Image source={{ uri }} style={styles.imageAttachment} resizeMode="cover" />;
-    }
-
+    if (isImage) return <Image source={{ uri }} style={styles.imageAttachment} resizeMode="cover" />;
     if (isAudio) {
         const isPlaying = playingUri === uri;
         const playAudio = async () => {
             if (sound) await sound.unloadAsync();
-            if (isPlaying) {
-                setPlayingUri(null);
-                return;
-            }
+            if (isPlaying) { setPlayingUri(null); return; }
             const { sound: newSound } = await Audio.Sound.createAsync({ uri });
             setSound(newSound);
             setPlayingUri(uri);
@@ -226,21 +190,18 @@ const ChatScreen = ({ route, navigation }) => {
         return (
             <TouchableOpacity onPress={playAudio} style={styles.fileContainer}>
                 <AntDesign name={isPlaying ? "pausecircleo" : "playcircleo"} size={32} color={isOut ? "#fff" : AppColors.primaryBrown} />
-                <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}>Аудиофайл</Text>
+                <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}> Аудиофайл</Text>
             </TouchableOpacity>
         );
     }
-
     if (isUrl) {
-        const fileName = uri.split('/').pop();
         return (
             <View style={styles.fileContainer}>
                 <AntDesign name="file1" size={30} color={isOut ? "#fff" : AppColors.primaryBrown} />
-                <Text style={[isOut ? styles.msgTextOut : styles.msgTextIn, {marginLeft: 8}]} numberOfLines={2}>{decodeURIComponent(fileName)}</Text>
+                <Text style={[isOut ? styles.msgTextOut : styles.msgTextIn, {marginLeft: 8}]} numberOfLines={2}>{decodeURIComponent(uri.split('/').pop())}</Text>
             </View>
         );
     }
-    
     return <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}>{item.body}</Text>;
   };
 
@@ -269,17 +230,16 @@ const ChatScreen = ({ route, navigation }) => {
             </View>
       </Pressable>
     );
-  }, [messages, lastReadId, getMessageStatus, playingUri]);
+  }, [messages, lastReadId, playingUri]);
 
   return (
     <View style={styles.container}>
       <FlatList 
         ref={listRef} 
         data={messages} 
-        keyExtractor={(item, index) => `${item.id}_${index}`}
+        keyExtractor={(item, index) => item.id || `${index}`}
         renderItem={renderMessage}
         contentContainerStyle={styles.messagesList}
-        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: false })}
         keyboardShouldPersistTaps="handled"
         extraData={lastReadId}
       />
@@ -296,10 +256,7 @@ const ChatScreen = ({ route, navigation }) => {
           multiline 
         />
         <TouchableOpacity onPress={send} disabled={!text.trim()}>
-          <LinearGradient 
-            colors={text.trim() ? [AppColors.lightBrown, AppColors.primaryBrown] : ['#ccc', '#aaa']} 
-            style={styles.sendBtn}
-          >
+          <LinearGradient colors={text.trim() ? [AppColors.lightBrown, AppColors.primaryBrown] : ['#ccc', '#aaa']} style={styles.sendBtn}>
             <Text style={styles.sendBtnTxt}>↑</Text>
           </LinearGradient>
         </TouchableOpacity>
