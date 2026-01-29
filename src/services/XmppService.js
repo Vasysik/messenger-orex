@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { client, xml } from '@xmpp/client';
 import EventEmitter from 'events';
 import StorageService from './StorageService';
-import MessageStorageService from './MessageStorageService'; // Убедись, что этот импорт правильный
+import MessageStorageService from './MessageStorageService';
 
 if (typeof global.process === 'undefined') global.process = require('process');
 if (typeof global.Buffer === 'undefined') global.Buffer = require('buffer').Buffer;
@@ -15,7 +15,6 @@ if (Platform.OS !== 'web') {
 if (!global.crypto) global.crypto = {};
 if (!global.crypto.randomUUID) global.crypto.randomUUID = uuidv4;
 
-// Вспомогательная функция для получения Blob через XHR
 const getBlobFromUri = async (uri) => {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -27,10 +26,9 @@ const getBlobFromUri = async (uri) => {
       }
     };
     xhr.onerror = function (e) {
-      console.error('XHR Blob Error:', e);
       reject(new Error('Failed to convert URI to Blob (network error)'));
     };
-    xhr.responseType = 'blob'; // Важно: получить как Blob
+    xhr.responseType = 'blob';
     xhr.open('GET', uri, true);
     xhr.send(null);
   });
@@ -44,7 +42,7 @@ class XmppService extends EventEmitter {
         this.lastMessages = {};
         this.unreadCounts = {};
         this.presenceMap = {};
-        this.typingMap = {}; // Пока не используется
+        this.typingMap = {};
         this.userJid = '';
         this.userPassword = '';
         this.reconnectTimer = null;
@@ -58,13 +56,13 @@ class XmppService extends EventEmitter {
         try {
             const saved = await StorageService.getItem('lastReadMessages');
             if (saved) this.lastReadMessageId = JSON.parse(saved);
-        } catch (e) { console.log('Failed to load last read statuses:', e); }
+        } catch (e) {}
     }
 
     async saveLastReadStatuses() {
         try {
             await StorageService.setItem('lastReadMessages', JSON.stringify(this.lastReadMessageId));
-        } catch (e) { console.log('Failed to save last read statuses:', e); }
+        } catch (e) {}
     }
     
     setLastReadMessage(contactJid, msgId) {
@@ -77,7 +75,7 @@ class XmppService extends EventEmitter {
         return this.lastReadMessageId[contactJid.split('/')[0]] || null;
     }
 
-    async uploadFile(uri) {
+    async uploadFile(uri, onProgress) {
         console.log('--- Начало загрузки файла ---');
         
         if (!this.isConnected) {
@@ -95,18 +93,19 @@ class XmppService extends EventEmitter {
                 }
             }
             
-            // 1. Получаем Blob через XHR
+            if (onProgress) onProgress(5);
+            
             const blob = await getBlobFromUri(uri);
             if (!blob || blob.size === 0) {
                 console.error('Failed to get a valid Blob from URI:', uri);
                 return null;
             }
             
-            // 2. Генерируем чистое имя файла
-            let filename = uuidv4(); // Всегда уникальное имя
+            if (onProgress) onProgress(10);
+            
+            let filename = uuidv4();
             let fileType = blob.type || 'application/octet-stream';
             
-            // Определяем расширение по MIME-типу
             const mimeToExt = {
                 'image/jpeg': 'jpeg',
                 'image/jpg': 'jpg', 
@@ -140,7 +139,7 @@ class XmppService extends EventEmitter {
                 xml('request', { 
                     xmlns: 'urn:xmpp:http:upload:0', 
                     filename, 
-                    size: size.toString(), // Некоторые серверы хотят строку
+                    size: size.toString(),
                     'content-type': fileType 
                 })
             );
@@ -149,9 +148,8 @@ class XmppService extends EventEmitter {
                 let handled = false;
                 
                 const onSlotStanza = (stanza) => {
-                    // Проверяем только IQ с нашим ID
                     if (!stanza.is('iq') || stanza.attrs.id !== id) return;
-                    if (handled) return; // Уже обработали
+                    if (handled) return;
                     
                     handled = true;
                     this.xmpp.off('stanza', onSlotStanza);
@@ -160,8 +158,8 @@ class XmppService extends EventEmitter {
                     if (stanza.attrs.type === 'error') {
                         const errorEl = stanza.getChild('error');
                         const errorText = errorEl?.getChild('text')?.getText() || 
-                                        errorEl?.children?.[0]?.name || 
-                                        'Unknown error';
+                                         errorEl?.children?.[0]?.name || 
+                                         'Unknown error';
                         console.error('Ошибка IQ при запросе слота:', errorText);
                         return resolve(null);
                     }
@@ -185,12 +183,12 @@ class XmppService extends EventEmitter {
                     
                     console.log('Слот получен. PUT URL:', putUrl);
                     console.log('GET URL:', getUrl);
+                    
+                    if (onProgress) onProgress(15);
 
-                    // Выполняем PUT-запрос
                     const xhr = new XMLHttpRequest();
                     xhr.open('PUT', putUrl, true);
 
-                    // Устанавливаем заголовки из ответа сервера
                     putElement.getChildren('header').forEach(h => {
                         const headerName = h.attrs.name;
                         const headerValue = h.getText().trim();
@@ -200,31 +198,31 @@ class XmppService extends EventEmitter {
                         }
                     });
 
-                    // Content-Type обязательно
                     xhr.setRequestHeader('Content-Type', fileType);
                     console.log(`  Header: Content-Type: ${fileType}`);
 
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable && onProgress) {
+                            const percent = Math.round(15 + (e.loaded / e.total) * 80);
+                            onProgress(percent);
+                        }
+                    };
+
                     xhr.onload = () => {
                         if (xhr.status >= 200 && xhr.status < 300) {
-                            console.log('✅ Файл успешно загружен:', getUrl);
+                            console.log('Файл успешно загружен:', getUrl);
+                            if (onProgress) onProgress(100);
                             resolve(getUrl);
                         } else {
-                            console.error('❌ Ошибка загрузки:', xhr.status, xhr.statusText);
+                            console.error('Ошибка загрузки:', xhr.status, xhr.statusText);
                             console.error('Response:', xhr.responseText);
                             resolve(null);
                         }
                     };
 
                     xhr.onerror = (e) => {
-                        console.error('❌ Сетевая ошибка при PUT:', e);
+                        console.error('Сетевая ошибка при PUT:', e);
                         resolve(null);
-                    };
-
-                    xhr.upload.onprogress = (e) => {
-                        if (e.lengthComputable) {
-                            const percent = Math.round((e.loaded / e.total) * 100);
-                            console.log(`Загрузка: ${percent}%`);
-                        }
                     };
 
                     xhr.send(blob);
@@ -237,13 +235,13 @@ class XmppService extends EventEmitter {
                     if (!handled) {
                         handled = true;
                         this.xmpp.off('stanza', onSlotStanza);
-                        console.error('⏱️ Таймаут ожидания слота (30с) для:', id);
+                        console.error('Таймаут ожидания слота (30с) для:', id);
                         resolve(null);
                     }
                 }, 30000);
             });
         } catch (e) {
-            console.error('💥 Критическая ошибка uploadFile:', e);
+            console.error('Критическая ошибка uploadFile:', e);
             return null;
         }
     }
@@ -252,7 +250,6 @@ class XmppService extends EventEmitter {
         console.log('Начинаю обнаружение службы HTTP Upload...');
         const userDomain = this.userJid.split('@')[1]?.split('/')[0] || this.xmpp.options.domain;
         
-        // 1. Попробуем сначала на стандартном JID 'upload.domain' через disco#info
         const potentialUploadJid = `upload.${userDomain}`;
         const discoInfoId = 'disco_info_' + uuidv4();
         const iqInfo = xml('iq', { type: 'get', to: potentialUploadJid, id: discoInfoId },
@@ -263,9 +260,13 @@ class XmppService extends EventEmitter {
         console.log(`Отправлен disco#info запрос к: ${potentialUploadJid} (ID: ${discoInfoId})`);
 
         return new Promise((resolve) => {
+            let resolved = false;
+            
             const onDiscoInfoStanza = (stanza) => {
                 if (stanza.is('iq') && stanza.attrs.id === discoInfoId) {
-                    this.xmpp.off('stanza', onDiscoInfoStanza); // Удаляем слушателя
+                    if (resolved) return;
+                    resolved = true;
+                    this.xmpp.off('stanza', onDiscoInfoStanza);
 
                     if (stanza.attrs.type === 'result') {
                         const features = stanza.getChild('query', 'http://jabber.org/protocol/disco#info')?.getChildren('feature') || [];
@@ -273,24 +274,23 @@ class XmppService extends EventEmitter {
                         if (supportsUpload) {
                             this.uploadService = potentialUploadJid;
                             console.log("Обнаружена служба HTTP Upload (disco#info):", this.uploadService);
-                            return resolve(); // Успех, завершаем
+                            return resolve();
                         }
                     }
                     console.log(`Служба HTTP Upload не найдена на ${potentialUploadJid} или не поддерживает 'urn:xmpp:http:upload:0'.`);
-                    // Если не нашли, пробуем disco#items на основном домене
                     performItemsDiscovery();
                 }
             };
             this.xmpp.on('stanza', onDiscoInfoStanza);
 
-            // Таймаут для disco#info, чтобы не ждать вечно
             setTimeout(() => {
-                if (!this.uploadService) {
+                if (!this.uploadService && !resolved) {
+                    resolved = true;
                     this.xmpp.off('stanza', onDiscoInfoStanza);
                     console.log('Таймаут для disco#info, перехожу к disco#items.');
                     performItemsDiscovery();
                 }
-            }, 5000); // 5 секунд на disco#info
+            }, 5000);
 
             const performItemsDiscovery = () => {
                 const discoItemsId = 'disco_items_' + uuidv4();
@@ -300,15 +300,17 @@ class XmppService extends EventEmitter {
                 this.xmpp.send(iqItems);
                 console.log(`Отправлен disco#items запрос к: ${userDomain} (ID: ${discoItemsId})`);
 
+                let itemsResolved = false;
+                
                 const onDiscoItemsStanza = (stanza) => {
                     if (stanza.is('iq') && stanza.attrs.id === discoItemsId) {
-                        this.xmpp.off('stanza', onDiscoItemsStanza); // Удаляем слушателя
+                        if (itemsResolved) return;
+                        itemsResolved = true;
+                        this.xmpp.off('stanza', onDiscoItemsStanza);
                         const items = stanza.getChild('query')?.getChildren('item') || [];
-                        // Ищем элемент, чей JID содержит "upload" и поддерживающий нужный "feature"
                         const uploadItem = items.find(item => item.attrs.jid && item.attrs.name?.toLowerCase().includes('upload'));
                         
                         if (uploadItem) {
-                            // Если нашли потенциальный upload-сервис, проверим его возможности
                             const secondDiscoInfoId = 'disco_info_sub_' + uuidv4();
                             const secondIqInfo = xml('iq', { type: 'get', to: uploadItem.attrs.jid, id: secondDiscoInfoId },
                                 xml('query', { xmlns: 'http://jabber.org/protocol/disco#info' })
@@ -316,8 +318,12 @@ class XmppService extends EventEmitter {
                             this.xmpp.send(secondIqInfo);
                             console.log(`Отправлен вторичный disco#info запрос к: ${uploadItem.attrs.jid} (ID: ${secondDiscoInfoId})`);
 
+                            let secondResolved = false;
+                            
                             const onSecondDiscoInfoStanza = (subStanza) => {
                                 if (subStanza.is('iq') && subStanza.attrs.id === secondDiscoInfoId) {
+                                    if (secondResolved) return;
+                                    secondResolved = true;
                                     this.xmpp.off('stanza', onSecondDiscoInfoStanza);
                                     if (subStanza.attrs.type === 'result') {
                                         const subFeatures = subStanza.getChild('query', 'http://jabber.org/protocol/disco#info')?.getChildren('feature') || [];
@@ -327,28 +333,34 @@ class XmppService extends EventEmitter {
                                             console.log("Обнаружена служба HTTP Upload (вторичный disco#info):", this.uploadService);
                                         }
                                     }
-                                    resolve(); // Завершаем после вторичной проверки
+                                    resolve();
                                 }
                             };
                             this.xmpp.on('stanza', onSecondDiscoInfoStanza);
-                            setTimeout(() => { // Таймаут для вторичной проверки
-                                this.xmpp.off('stanza', onSecondDiscoInfoStanza);
-                                if (!this.uploadService) console.log(`Таймаут вторичного disco#info для ${uploadItem.attrs.jid}.`);
-                                resolve();
+                            setTimeout(() => {
+                                if (!secondResolved) {
+                                    secondResolved = true;
+                                    this.xmpp.off('stanza', onSecondDiscoInfoStanza);
+                                    if (!this.uploadService) console.log(`Таймаут вторичного disco#info для ${uploadItem.attrs.jid}.`);
+                                    resolve();
+                                }
                             }, 5000);
 
                         } else {
                             console.log("Служба HTTP Upload не найдена через disco#items.");
-                            resolve(); // Завершаем, если не нашли
+                            resolve();
                         }
                     }
                 };
                 this.xmpp.on('stanza', onDiscoItemsStanza);
                 setTimeout(() => { 
-                    this.xmpp.off('stanza', onDiscoItemsStanza); 
-                    if (!this.uploadService) console.log('Таймаут ожидания disco#items ответа.');
-                    resolve(); 
-                }, 10000); // 10 секунд на disco#items
+                    if (!itemsResolved) {
+                        itemsResolved = true;
+                        this.xmpp.off('stanza', onDiscoItemsStanza); 
+                        if (!this.uploadService) console.log('Таймаут ожидания disco#items ответа.');
+                        resolve(); 
+                    }
+                }, 10000);
             };
         });
     }
@@ -361,7 +373,6 @@ class XmppService extends EventEmitter {
 
         const [local, domain] = jid.split('@');
         const cleanDomain = domain ? domain.split('/')[0] : '';
-        // Установка this.uploadService по умолчанию здесь удалена, теперь полностью полагаемся на discoverUploadService
         const serviceUrl = `wss://${cleanDomain}:5281/xmpp-websocket`;
         
         this.xmpp = client({ service: serviceUrl, domain: cleanDomain, resource: 'mobile', username: local, password: password });
@@ -370,14 +381,11 @@ class XmppService extends EventEmitter {
         this.xmpp.on('offline', () => { console.log('XMPP Offline'); this.isConnected = false; this.emit('offline'); this.scheduleReconnect(); });
         
         this.xmpp.on('status', (status) => {
+            console.log('XMPP status changed:', status);
             this.isConnected = (status === 'online');
             if (this.isConnected) {
                 this.reconnectAttempts = 0;
                 if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
-            } else if (status === 'connecting' || status === 'disconnecting') {
-                // Do nothing
-            } else {
-                console.log('XMPP status changed:', status);
             }
             this.emit('status', status);
         });
@@ -385,17 +393,16 @@ class XmppService extends EventEmitter {
         this.xmpp.on('online', async (address) => {
             await this.xmpp.send(xml('presence'));
             console.log('XMPP Online:', address);
-            // Обнаруживаем службу загрузки *после* установления соединения
             this.discoverUploadService().then(() => {
                 console.log('Upload Service Discovery completed. Service JID:', this.uploadService || 'None found');
             });
             this.emit('online', address);
-            setTimeout(() => this.loadAllHistory(), 1000); // Загружаем историю после небольшой задержки
+            setTimeout(() => this.loadAllHistory(), 1000);
         });
 
         this.xmpp.on('stanza', async (stanza) => {
             const from = stanza.attrs.from?.split('/')[0];
-            const to = stanza.attrs.to?.split('/')[0]; // Получаем JID получателя для контекста
+            const to = stanza.attrs.to?.split('/')[0];
             const myBareJid = this.userJid.split('/')[0];
 
             if (stanza.is('presence')) {
@@ -406,7 +413,6 @@ class XmppService extends EventEmitter {
             }
 
             if (stanza.is('message')) {
-                // Состояние чата (набор текста)
                 const composing = stanza.getChild('composing', 'http://jabber.org/protocol/chatstates');
                 const active = stanza.getChild('active', 'http://jabber.org/protocol/chatstates');
                 const paused = stanza.getChild('paused', 'http://jabber.org/protocol/chatstates');
@@ -414,44 +420,35 @@ class XmppService extends EventEmitter {
                 if (composing) this.emit('typing', { jid: from, isTyping: true });
                 else if (active || paused) this.emit('typing', { jid: from, isTyping: false });
                 
-                // Квитанции о доставке
                 const received = stanza.getChild('received', 'urn:xmpp:receipts');
-                if (received) this.emit('delivery_update', { msgId: received.attrs.id, contactJid: from }); // 'from' здесь - отправитель квитанции
+                if (received) this.emit('delivery_update', { msgId: received.attrs.id, contactJid: from });
                 
-                // Маркеры чата (статус прочтения)
                 const displayed = stanza.getChild('displayed', 'urn:xmpp:chat-markers:0');
                 if (displayed) {
                     this.setLastReadMessage(from, displayed.attrs.id);
                     this.emit('read_update', { msgId: displayed.attrs.id, contactJid: from });
                 }
 
-                // Тело сообщения
                 if (stanza.getChild('body')) {
                     const body = stanza.getChildText('body');
-                    const msgId = stanza.attrs.id || uuidv4(); // Предпочитаем ID сервера для дедупликации
+                    const msgId = stanza.attrs.id || uuidv4();
                     const delayChild = stanza.getChild('delay', 'urn:xmpp:delay');
                     const timestamp = delayChild ? new Date(delayChild.attrs.stamp) : new Date();
                     
-                    // Определяем, это входящее сообщение или эхо нашего собственного исходящего
-                    // Если `from` = мой JID, то это исходящее сообщение (эхо)
-                    // Если `to` = мой JID И `from` != мой JID, то это входящее сообщение
                     const isOutgoingEcho = from === myBareJid;
                     const type = isOutgoingEcho ? 'out' : 'in';
 
                     const newMsg = { id: msgId, from: from, body, timestamp, type: type };
                     
-                    // Сохраняем в локальное хранилище (MessageStorageService обрабатывает дедупликацию по ID)
-                    // Для исходящих (эхо), `to` - это контакт. Для входящих, `from` - это контакт.
                     const relevantContactJid = isOutgoingEcho ? to : from;
                     await MessageStorageService.saveMessages(relevantContactJid, [newMsg]);
 
-                    // Обновляем последнее сообщение и счетчик непрочитанных
                     this.lastMessages[relevantContactJid] = { body, timestamp, type: type };
                     if (type === 'in') {
                         this.unreadCounts[relevantContactJid] = (this.unreadCounts[relevantContactJid] || 0) + 1;
                     }
                     
-                    this.emit('message', newMsg); // Эмитим обработанное сообщение
+                    this.emit('message', newMsg);
                     this.emit('last_message_update', relevantContactJid);
                 }
             }
@@ -464,11 +461,10 @@ class XmppService extends EventEmitter {
 
     scheduleReconnect() {
         if (this.reconnectTimer || this.reconnectAttempts >= 10) {
-            console.warn(`Максимальное количество попыток переподключения достигнуто (${this.reconnectAttempts}) или таймер уже активен.`);
             return;
         }
         this.reconnectAttempts++;
-        const delay = Math.min(this.reconnectAttempts * 2000, 30000); // Экспоненциальная задержка, макс. 30с
+        const delay = Math.min(this.reconnectAttempts * 2000, 30000);
         console.log(`Планирую переподключение через ${delay / 1000} секунд. Попытка ${this.reconnectAttempts}.`);
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
@@ -476,17 +472,14 @@ class XmppService extends EventEmitter {
                 console.log('Попытка переподключения...');
                 this.connect(this.userJid, this.userPassword);
             } else {
-                console.error('Невозможно переподключиться: JID или пароль отсутствуют.');
                 this.emit('error', new Error('JID или пароль отсутствуют для переподключения.'));
             }
         }, delay);
     }
     
-    // loadAllHistory был модифицирован для использования MessageStorageService.getMessages
     async loadAllHistory() {
         const roster = await this.getRoster();
         for (const contact of roster) {
-            // Загружаем все сообщения для каждого контакта из локального хранилища
             const msgs = await MessageStorageService.getMessages(contact.jid);
             if (msgs.length > 0) {
                 const last = msgs[msgs.length - 1];
@@ -518,44 +511,35 @@ class XmppService extends EventEmitter {
 
     sendMessage(to, text) {
         if (!this.isConnected) {
-            console.warn('Невозможно отправить сообщение: XMPP не подключен.');
             return null;
         }
-        const id = uuidv4(); // ID, генерируемый клиентом
+        const id = uuidv4();
         const timestamp = new Date();
         const bareJid = to.split('/')[0];
         const myBareJid = this.userJid.split('/')[0];
 
-        // Создаем объект сообщения для локального отображения и хранения
         const newMsg = { id, body: text, timestamp, type: 'out', from: myBareJid };
         
-        // Немедленно сохраняем исходящее сообщение в локальное хранилище
         MessageStorageService.saveMessages(bareJid, [newMsg]);
 
-        // Обновляем последнее сообщение в памяти
         this.lastMessages[bareJid] = { body: text, timestamp, type: 'out' };
         this.emit('last_message_update', bareJid);
 
-        // Отправляем XMPP-станзу
-        this.xmpp.send(xml('message', { to, type: 'chat', id }, // Используем ID, сгенерированный клиентом
+        this.xmpp.send(xml('message', { to, type: 'chat', id },
             xml('body', {}, text),
-            xml('request', { xmlns: 'urn:xmpp:receipts' }), // Запрашиваем квитанцию о доставке
-            xml('markable', { xmlns: 'urn:xmpp:chat-markers:0' }), // Включаем маркеры чата
-            xml('active', { xmlns: 'http://jabber.org/protocol/chatstates' }) // Указываем активное состояние чата
+            xml('request', { xmlns: 'urn:xmpp:receipts' }),
+            xml('markable', { xmlns: 'urn:xmpp:chat-markers:0' }),
+            xml('active', { xmlns: 'http://jabber.org/protocol/chatstates' })
         ));
         
-        // Эмитим сообщение немедленно, чтобы UI обновился, не дожидаясь эхо с сервера.
-        // Обработчик onMessage в ChatScreen обработает его и дедуплицирует, если эхо придет.
         this.emit('message', newMsg); 
 
         return id;
     }
 
-    // fetchHistory теперь умнее: сначала локальные, потом докачка с сервера
     async fetchHistory(withJid) {
         const bareJid = withJid.split('/')[0];
         
-        // 1. Сначала отдаем то, что есть в телефоне (мгновенно)
         let localMessages = await MessageStorageService.getMessages(bareJid);
         
         if (!this.isConnected) {
@@ -563,7 +547,6 @@ class XmppService extends EventEmitter {
             return localMessages;
         }
 
-        // 2. Запрашиваем историю у сервера через MAM
         const id = 'sync_mam_' + uuidv4();
         console.log(`Запрашиваю MAM историю для ${bareJid} (ID: ${id})`);
 
@@ -576,14 +559,16 @@ class XmppService extends EventEmitter {
             xml('query', { xmlns: 'urn:xmpp:mam:2' },
                 xml('x', { xmlns: 'jabber:x:data', type: 'submit' }, ...queryFields),
                 xml('set', { xmlns: 'http://jabber.org/protocol/rsm' }, 
-                    xml('max', {}, '100'), // Берем пачку побольше
-                    xml('before', {}, '')  // Начиная с самых свежих и назад
+                    xml('max', {}, '100'),
+                    xml('before', {}, '')
                 )
             )
         );
 
         return new Promise((resolve) => {
             const fetched = [];
+            let handled = false;
+            
             const onStanza = (stanza) => {
                 if (stanza.is('message')) {
                     const result = stanza.getChild('result', 'urn:xmpp:mam:2');
@@ -598,7 +583,6 @@ class XmppService extends EventEmitter {
                             const fromJid = msg.attrs.from.split('/')[0];
                             const myBareJid = this.userJid.split('/')[0];
 
-                            // Тип сообщения для MAM: если отправитель - я, то 'out', иначе 'in'
                             const type = (fromJid === myBareJid) ? 'out' : 'in';
 
                             fetched.push({
@@ -612,19 +596,21 @@ class XmppService extends EventEmitter {
                     }
                 }
                 if (stanza.is('iq') && stanza.attrs.id === id) {
+                    if (handled) return;
+                    handled = true;
                     this.xmpp.off('stanza', onStanza);
                     console.log(`Получено ${fetched.length} сообщений MAM для ${bareJid}.`);
-                    // Сохраняем пачку в базу. Она сама сопоставит ID и отсортирует по времени.
                     MessageStorageService.saveMessages(bareJid, fetched).then(async () => {
                         const allMessages = await MessageStorageService.getMessages(bareJid);
-                        resolve(allMessages); // Возвращаем объединенный и отсортированный список
+                        resolve(allMessages);
                     });
                 }
             };
             this.xmpp.on('stanza', onStanza);
             this.xmpp.send(iq);
-            // Если сервер тупит, отдаем что было в локалке через 5 сек
             setTimeout(() => { 
+                if (handled) return;
+                handled = true;
                 this.xmpp.off('stanza', onStanza); 
                 console.warn(`Таймаут получения MAM истории для ${bareJid}. Возвращаю локальные сообщения.`);
                 resolve(localMessages); 
@@ -637,8 +623,11 @@ class XmppService extends EventEmitter {
         const id = 'roster_' + uuidv4();
         this.xmpp.send(xml('iq', { type: 'get', id }, xml('query', { xmlns: 'jabber:iq:roster' })));
         return new Promise((resolve) => {
+            let handled = false;
             const onStanza = (stanza) => {
                 if (stanza.is('iq') && stanza.attrs.id === id) {
+                    if (handled) return;
+                    handled = true;
                     this.xmpp.off('stanza', onStanza);
                     const items = stanza.getChild('query')?.getChildren('item') || [];
                     resolve(items.map(i => ({ jid: i.attrs.jid, name: i.attrs.name || i.attrs.jid.split('@')[0] })));
@@ -646,6 +635,8 @@ class XmppService extends EventEmitter {
             };
             this.xmpp.on('stanza', onStanza);
             setTimeout(() => {
+                if (handled) return;
+                handled = true;
                 this.xmpp.off('stanza', onStanza);
                 console.warn('Таймаут получения ростера.');
                 resolve([]);
@@ -665,7 +656,7 @@ class XmppService extends EventEmitter {
         if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
         if (this.xmpp) { 
             console.log('Отключаю XMPP-клиент.');
-            this.xmpp.stop().catch((err) => { console.error('Ошибка при остановке XMPP:', err); }); 
+            this.xmpp.stop().catch((err) => {}); 
             this.xmpp = null; 
             this.isConnected = false; 
             this.emit('offline');

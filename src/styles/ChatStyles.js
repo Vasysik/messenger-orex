@@ -130,13 +130,12 @@ export const ChatStyles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center'
   },
-  // Улучшенные стили для медиа
   imageAttachment: {
     width: 220,
     height: 220,
     borderRadius: 12,
     marginVertical: 4,
-    backgroundColor: '#f0f0f0' // Placeholder пока грузится
+    backgroundColor: '#f0f0f0'
   },
   fileContainer: {
     flexDirection: 'row',
@@ -152,5 +151,45 @@ export const ChatStyles = StyleSheet.create({
     backgroundColor: '#333',
     justifyContent: 'center',
     alignItems: 'center'
+  },
+  uploadProgressContainer: {
+    position: 'absolute',
+    bottom: 70,
+    left: 0,
+    right: 0,
+    alignItems: 'center',
+    zIndex: 100
+  },
+  uploadProgressContent: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 12,
+    paddingHorizontal: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    minWidth: 200
+  },
+  uploadProgressText: {
+    fontSize: 13,
+    color: AppColors.darkWalnut,
+    fontWeight: '500'
+  },
+  uploadProgressBarBg: {
+    flex: 1,
+    height: 6,
+    backgroundColor: '#eee',
+    borderRadius: 3,
+    overflow: 'hidden'
+  },
+  uploadProgressBar: {
+    height: '100%',
+    backgroundColor: AppColors.primaryBrown,
+    borderRadius: 3
   }
 });

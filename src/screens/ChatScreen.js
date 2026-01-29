@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { View, Text, TextInput, TouchableOpacity, FlatList, Keyboard, Platform, Pressable, Clipboard, Alert, Image, Linking } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, FlatList, Keyboard, Platform, Pressable, Clipboard, Alert, Image, Linking, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { AppColors } from '../constants/Colors';
 import { ChatStyles as styles } from '../styles/ChatStyles';
@@ -19,13 +19,14 @@ const ChatScreen = ({ route, navigation }) => {
   const [lastReadId, setLastReadId] = useState(null);
   const [sound, setSound] = useState();
   const [playingUri, setPlayingUri] = useState(null);
-  const [failedImages, setFailedImages] = useState(new Set()); // Отслеживаем битые картинки
+  const [failedImages, setFailedImages] = useState(new Set());
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
   const listRef = useRef();
   const contactJid = contact.jid.split('/')[0];
 
   const EMOJI_REGEX = /(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/g;
 
-  // Хелперы для определения типа контента
   const isValidUrl = (str) => {
     try {
       return str.startsWith('http://') || str.startsWith('https://');
@@ -36,7 +37,6 @@ const ChatScreen = ({ route, navigation }) => {
 
   const getFileExtension = (url) => {
     try {
-      // Убираем query параметры и берём расширение
       const cleanUrl = url.split('?')[0].split('#')[0];
       const parts = cleanUrl.split('.');
       if (parts.length > 1) {
@@ -52,11 +52,7 @@ const ChatScreen = ({ route, navigation }) => {
     if (!isValidUrl(url)) return false;
     const ext = getFileExtension(url);
     const imageExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico', 'heic', 'heif', 'avif'];
-    
-    // Проверяем по расширению
     if (imageExtensions.includes(ext)) return true;
-    
-    // Проверяем по содержимому URL (для сервисов без расширения)
     const urlLower = url.toLowerCase();
     return urlLower.includes('/image') || 
            urlLower.includes('img.') || 
@@ -119,7 +115,6 @@ const ChatScreen = ({ route, navigation }) => {
       if (isMounted) {
           setMessages(local);
           setLastReadId(XmppService.getLastReadMessageId(contactJid));
-          setTimeout(() => listRef.current?.scrollToEnd({ animated: false }), 50);
       }
 
       const fullHistory = await XmppService.fetchHistory(contactJid);
@@ -127,7 +122,6 @@ const ChatScreen = ({ route, navigation }) => {
           setMessages(fullHistory);
           const lastIn = fullHistory.filter(m => m.type === 'in').pop();
           if (lastIn) XmppService.markAsRead(contactJid, lastIn.id);
-          setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
       }
     };
     
@@ -141,7 +135,6 @@ const ChatScreen = ({ route, navigation }) => {
           return [...prev, m];
         });
         XmppService.markAsRead(contactJid, m.id);
-        setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
       }
     };
 
@@ -165,6 +158,12 @@ const ChatScreen = ({ route, navigation }) => {
     };
   }, [contactJid]);
 
+  const scrollToBottom = useCallback(() => {
+    if (listRef.current && messages.length > 0) {
+      listRef.current.scrollToEnd({ animated: false });
+    }
+  }, [messages.length]);
+
   const send = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed) return;
@@ -173,17 +172,26 @@ const ChatScreen = ({ route, navigation }) => {
       setMessages(prev => [...prev, { id, body: trimmed, type: 'out', timestamp: new Date() }]);
       setText('');
       XmppService.sendTypingStatus(contactJid, false);
-      setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
     }
   }, [text, contactJid]);
   
   const handleFileUpload = async (uri) => {
-    const uploadedUrl = await XmppService.uploadFile(uri);
+    setIsUploading(true);
+    setUploadProgress(0);
+    
+    const onProgress = (percent) => {
+      setUploadProgress(percent);
+    };
+    
+    const uploadedUrl = await XmppService.uploadFile(uri, onProgress);
+    
+    setIsUploading(false);
+    setUploadProgress(null);
+    
     if (uploadedUrl) {
       const id = XmppService.sendMessage(contactJid, uploadedUrl);
       if (id) {
           setMessages(prev => [...prev, { id, body: uploadedUrl, type: 'out', timestamp: new Date() }]);
-          setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 100);
       }
     } else {
       Alert.alert("Ошибка", "Не удалось загрузить файл.");
@@ -192,7 +200,7 @@ const ChatScreen = ({ route, navigation }) => {
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({ 
-      mediaTypes: ['images', 'videos'], // Новый API вместо deprecated MediaTypeOptions
+      mediaTypes: ['images', 'videos'],
       quality: 0.8 
     });
     if (!result.canceled) handleFileUpload(result.assets[0].uri);
@@ -204,6 +212,7 @@ const ChatScreen = ({ route, navigation }) => {
   };
 
   const showAttachmentMenu = () => {
+    if (isUploading) return;
     if (Platform.OS === 'web') { pickImage(); return; }
     Alert.alert("Отправить файл", "Выберите тип файла", [
         { text: "Изображение/Видео", onPress: pickImage },
@@ -235,13 +244,11 @@ const ChatScreen = ({ route, navigation }) => {
   };
 
   const handleImageError = (uri) => {
-    console.log('Image load failed:', uri);
     setFailedImages(prev => new Set([...prev, uri]));
   };
 
   const openUrl = (url) => {
     Linking.openURL(url).catch(err => {
-      console.error('Failed to open URL:', err);
       Alert.alert('Ошибка', 'Не удалось открыть ссылку');
     });
   };
@@ -249,15 +256,12 @@ const ChatScreen = ({ route, navigation }) => {
   const renderMessageContent = (item) => {
     const isOut = item.type === 'out';
     const uri = item.body;
-    const textColor = isOut ? '#fff' : AppColors.darkWalnut;
     const iconColor = isOut ? '#fff' : AppColors.primaryBrown;
 
-    // Не URL — просто текст
     if (!isValidUrl(uri)) {
       return <Text style={isOut ? styles.msgTextOut : styles.msgTextIn}>{item.body}</Text>;
     }
 
-    // Изображение (включая GIF)
     if (isImageUrl(uri) && !failedImages.has(uri)) {
       return (
         <TouchableOpacity onPress={() => openUrl(uri)} activeOpacity={0.9}>
@@ -271,7 +275,6 @@ const ChatScreen = ({ route, navigation }) => {
       );
     }
 
-    // Аудио
     if (isAudioUrl(uri)) {
       const isPlaying = playingUri === uri;
       const playAudio = async () => {
@@ -286,7 +289,6 @@ const ChatScreen = ({ route, navigation }) => {
             if (status.didJustFinish) setPlayingUri(null);
           });
         } catch (e) {
-          console.error('Audio play error:', e);
           Alert.alert('Ошибка', 'Не удалось воспроизвести аудио');
         }
       };
@@ -300,7 +302,6 @@ const ChatScreen = ({ route, navigation }) => {
       );
     }
 
-    // Видео
     if (isVideoUrl(uri)) {
       return (
         <TouchableOpacity onPress={() => openUrl(uri)} style={styles.fileContainer}>
@@ -317,7 +318,6 @@ const ChatScreen = ({ route, navigation }) => {
       );
     }
 
-    // Общий файл / битая картинка / ссылка
     return (
       <TouchableOpacity onPress={() => openUrl(uri)} style={styles.fileContainer}>
         <Feather name="file" size={28} color={iconColor} />
@@ -376,10 +376,27 @@ const ChatScreen = ({ route, navigation }) => {
         contentContainerStyle={styles.messagesList}
         keyboardShouldPersistTaps="handled"
         extraData={[lastReadId, playingUri, failedImages]}
+        onContentSizeChange={scrollToBottom}
+        onLayout={scrollToBottom}
       />
+      
+      {isUploading && (
+        <View style={styles.uploadProgressContainer}>
+          <View style={styles.uploadProgressContent}>
+            <ActivityIndicator size="small" color={AppColors.primaryBrown} />
+            <Text style={styles.uploadProgressText}>
+              Загрузка: {uploadProgress !== null ? `${uploadProgress}%` : 'подготовка...'}
+            </Text>
+            <View style={styles.uploadProgressBarBg}>
+              <View style={[styles.uploadProgressBar, { width: `${uploadProgress || 0}%` }]} />
+            </View>
+          </View>
+        </View>
+      )}
+      
       <View style={[styles.inputBar, Platform.OS !== 'web' && { marginBottom: keyboardHeight }]}>
-        <TouchableOpacity onPress={showAttachmentMenu} style={styles.attachBtn}>
-            <Feather name="paperclip" size={22} color={AppColors.primaryBrown} />
+        <TouchableOpacity onPress={showAttachmentMenu} style={styles.attachBtn} disabled={isUploading}>
+            <Feather name="paperclip" size={22} color={isUploading ? '#ccc' : AppColors.primaryBrown} />
         </TouchableOpacity>
         <TextInput 
           style={styles.input} 
@@ -389,8 +406,8 @@ const ChatScreen = ({ route, navigation }) => {
           placeholderTextColor={AppColors.textLight}
           multiline 
         />
-        <TouchableOpacity onPress={send} disabled={!text.trim()}>
-          <LinearGradient colors={text.trim() ? [AppColors.lightBrown, AppColors.primaryBrown] : ['#ccc', '#aaa']} style={styles.sendBtn}>
+        <TouchableOpacity onPress={send} disabled={!text.trim() || isUploading}>
+          <LinearGradient colors={text.trim() && !isUploading ? [AppColors.lightBrown, AppColors.primaryBrown] : ['#ccc', '#aaa']} style={styles.sendBtn}>
             <Text style={styles.sendBtnTxt}>↑</Text>
           </LinearGradient>
         </TouchableOpacity>
