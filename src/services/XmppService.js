@@ -42,6 +42,7 @@ class XmppService extends EventEmitter {
         this.lastMessages = {};
         this.unreadCounts = {};
         this.presenceMap = {};
+        this.fullJidMap = {};
         this.typingMap = {};
         this.userJid = '';
         this.userPassword = '';
@@ -49,6 +50,8 @@ class XmppService extends EventEmitter {
         this.reconnectAttempts = 0;
         this.lastReadMessageId = {};
         this.uploadService = null;
+        this.pendingCalls = {};
+        this.activeCalls = {};
         
         this.lastSyncTime = {};
         this.syncInProgress = {};
@@ -78,6 +81,85 @@ class XmppService extends EventEmitter {
 
     getLastReadMessageId(contactJid) {
         return this.lastReadMessageId[contactJid.split('/')[0]] || null;
+    }
+
+    sendJingleInitiate(toJid, callId, isVideo = false) {
+        if (!this.isConnected) return;
+        
+        const bareJid = toJid.split('/')[0];
+        const targetJid = this.fullJidMap[bareJid] || toJid;
+        
+        console.log('[Jingle] Target JID:', targetJid, '(bare:', bareJid, ')');
+        
+        if (!this.fullJidMap[bareJid]) {
+            console.warn('[Jingle] No full JID known for', bareJid, '- user may be offline');
+        }
+        
+        this.pendingCalls[callId] = { to: targetJid, toBarejid: bareJid, isVideo, isOutgoing: true };
+        this.activeCalls[callId] = true;
+        
+        const iqId = 'jingle_init_' + callId;
+        const iq = xml('iq', { to: targetJid, type: 'set', id: iqId },
+            xml('jingle', { 
+                xmlns: 'urn:xmpp:jingle:1', 
+                action: 'session-initiate', 
+                initiator: this.userJid,
+                sid: callId 
+            },
+                xml('content', { creator: 'initiator', name: 'audio' },
+                    xml('description', { xmlns: 'urn:xmpp:jingle:apps:rtp:1', media: 'audio' }),
+                    xml('transport', { xmlns: 'urn:xmpp:jingle:transports:ice-udp:1' })
+                )
+            )
+        );
+        
+        this.xmpp.send(iq);
+        console.log('[Jingle] session-initiate sent to:', targetJid, 'callId:', callId);
+    }
+
+    sendJingleAccept(toJid, callId) {
+        if (!this.isConnected) return;
+        
+        const iqId = 'jingle_accept_' + callId;
+        const iq = xml('iq', { to: toJid, type: 'set', id: iqId },
+            xml('jingle', { 
+                xmlns: 'urn:xmpp:jingle:1', 
+                action: 'session-accept', 
+                responder: this.userJid,
+                sid: callId 
+            },
+                xml('content', { creator: 'initiator', name: 'audio' },
+                    xml('description', { xmlns: 'urn:xmpp:jingle:apps:rtp:1', media: 'audio' }),
+                    xml('transport', { xmlns: 'urn:xmpp:jingle:transports:ice-udp:1' })
+                )
+            )
+        );
+        
+        this.xmpp.send(iq);
+        console.log('[Jingle] session-accept sent to:', toJid, 'callId:', callId);
+    }
+
+    sendJingleTerminate(toJid, callId, reason = 'success') {
+        if (!this.isConnected) return;
+        
+        delete this.pendingCalls[callId];
+        delete this.activeCalls[callId];
+        
+        const iqId = 'jingle_term_' + callId;
+        const iq = xml('iq', { to: toJid, type: 'set', id: iqId },
+            xml('jingle', { 
+                xmlns: 'urn:xmpp:jingle:1', 
+                action: 'session-terminate', 
+                sid: callId 
+            },
+                xml('reason', {},
+                    xml(reason, {})
+                )
+            )
+        );
+        
+        this.xmpp.send(iq);
+        console.log('[Jingle] session-terminate sent to:', toJid, 'callId:', callId, 'reason:', reason);
     }
 
     async uploadFile(uri, onProgress) {
@@ -378,12 +460,16 @@ class XmppService extends EventEmitter {
         
         this.lastSyncTime = {};
         this.syncInProgress = {};
+        this.pendingCalls = {};
+        this.activeCalls = {};
+        this.fullJidMap = {};
 
         const [local, domain] = jid.split('@');
         const cleanDomain = domain ? domain.split('/')[0] : '';
+        const resourceName = Platform.OS === 'web' ? 'web_' + Date.now() : 'mobile_' + Date.now();
         const serviceUrl = `wss://${cleanDomain}:5281/xmpp-websocket`;
         
-        this.xmpp = client({ service: serviceUrl, domain: cleanDomain, resource: 'mobile', username: local, password: password });
+        this.xmpp = client({ service: serviceUrl, domain: cleanDomain, resource: resourceName, username: local, password: password });
 
         this.xmpp.on('error', (err) => { console.log('XMPP Error:', err); this.emit('error', err); this.scheduleReconnect(); });
         this.xmpp.on('offline', () => { console.log('XMPP Offline'); this.isConnected = false; this.emit('offline'); this.scheduleReconnect(); });
@@ -399,8 +485,9 @@ class XmppService extends EventEmitter {
         });
 
         this.xmpp.on('online', async (address) => {
+            this.userJid = `${address._local}@${address._domain}/${address._resource}`;
             await this.xmpp.send(xml('presence'));
-            console.log('XMPP Online:', address);
+            console.log('XMPP Online:', address, 'Full JID:', this.userJid);
             this.discoverUploadService().then(() => {
                 console.log('Upload Service Discovery completed. Service JID:', this.uploadService || 'None found');
             });
@@ -409,15 +496,101 @@ class XmppService extends EventEmitter {
         });
 
         this.xmpp.on('stanza', async (stanza) => {
-            const from = stanza.attrs.from?.split('/')[0];
+            const from = stanza.attrs.from;
+            const fromBare = from?.split('/')[0];
             const to = stanza.attrs.to?.split('/')[0];
             const myBareJid = this.userJid.split('/')[0];
 
             if (stanza.is('presence')) {
-                if (stanza.attrs.type === 'subscribe') await this.xmpp.send(xml('presence', { to: from, type: 'subscribed' }));
-                else if (stanza.attrs.type === 'unavailable') this.presenceMap[from] = 'offline';
-                else if (!stanza.attrs.type && from !== myBareJid) this.presenceMap[from] = 'online';
-                this.emit('presence_update', { jid: from, status: this.presenceMap[from] });
+                const fullJid = from;
+                const bareJid = fromBare;
+                
+                if (stanza.attrs.type === 'subscribe') {
+                    await this.xmpp.send(xml('presence', { to: bareJid, type: 'subscribed' }));
+                } else if (stanza.attrs.type === 'unavailable') {
+                    this.presenceMap[bareJid] = 'offline';
+                    delete this.fullJidMap[bareJid];
+                    console.log('[Presence] Offline:', bareJid);
+                } else if (!stanza.attrs.type && bareJid !== myBareJid) {
+                    this.presenceMap[bareJid] = 'online';
+                    this.fullJidMap[bareJid] = fullJid;
+                    console.log('[Presence] Online:', bareJid, 'fullJid:', fullJid);
+                }
+                this.emit('presence_update', { jid: bareJid, status: this.presenceMap[bareJid] });
+            }
+
+            if (stanza.is('iq')) {
+                console.log('[IQ] Received:', stanza.attrs.type, 'from:', from, 'id:', stanza.attrs.id);
+                
+                const jingle = stanza.getChild('jingle', 'urn:xmpp:jingle:1');
+                if (jingle) {
+                    const action = jingle.attrs.action;
+                    const sid = jingle.attrs.sid;
+                    const initiator = jingle.attrs.initiator;
+                    
+                    console.log('[Jingle] Received action:', action, 'sid:', sid, 'from:', from, 'initiator:', initiator);
+                    
+                    if (action === 'session-initiate') {
+                        if (this.activeCalls[sid]) {
+                            console.log('[Jingle] Ignoring carbon copy of our own call:', sid);
+                            await this.xmpp.send(xml('iq', { to: from, type: 'result', id: stanza.attrs.id }));
+                            return;
+                        }
+                        
+                        const initiatorBare = initiator?.split('/')[0];
+                        if (initiatorBare === myBareJid) {
+                            console.log('[Jingle] Ignoring session-initiate from ourselves (carbon):', sid);
+                            await this.xmpp.send(xml('iq', { to: from, type: 'result', id: stanza.attrs.id }));
+                            return;
+                        }
+                        
+                        const contents = jingle.getChildren('content');
+                        const hasVideo = contents.some(c => 
+                            c.getChild('description')?.attrs.media === 'video'
+                        );
+                        
+                        console.log('[Jingle] Real incoming call from:', from, 'callId:', sid, 'video:', hasVideo);
+                        
+                        await this.xmpp.send(xml('iq', { to: from, type: 'result', id: stanza.attrs.id }));
+                        
+                        this.emit('jingle_incoming', { 
+                            from: from, 
+                            callId: sid, 
+                            isVideo: hasVideo 
+                        });
+                        
+                    } else if (action === 'session-accept') {
+                        console.log('[Jingle] Call accepted, sid:', sid);
+                        await this.xmpp.send(xml('iq', { to: from, type: 'result', id: stanza.attrs.id }));
+                        this.emit('jingle_accepted', { callId: sid });
+                        
+                    } else if (action === 'session-terminate') {
+                        const reason = jingle.getChild('reason')?.children?.[0]?.name || 'unknown';
+                        console.log('[Jingle] Call terminated, sid:', sid, 'reason:', reason);
+                        delete this.activeCalls[sid];
+                        delete this.pendingCalls[sid];
+                        await this.xmpp.send(xml('iq', { to: from, type: 'result', id: stanza.attrs.id }));
+                        this.emit('jingle_terminated', { callId: sid, reason });
+                    }
+                }
+                
+                if (stanza.attrs.type === 'error') {
+                    const errorEl = stanza.getChild('error');
+                    const errorType = errorEl?.attrs?.type;
+                    const errorCondition = errorEl?.children?.[0]?.name;
+                    console.log('[IQ Error] type:', errorType, 'condition:', errorCondition, 'id:', stanza.attrs.id);
+                    
+                    const callIdMatch = stanza.attrs.id?.match(/jingle_init_(.+)/);
+                    if (callIdMatch) {
+                        const callId = callIdMatch[1];
+                        if (this.activeCalls[callId]) {
+                            console.log('[Jingle] Call failed, emitting terminated for:', callId);
+                            delete this.activeCalls[callId];
+                            delete this.pendingCalls[callId];
+                            this.emit('jingle_terminated', { callId, reason: errorCondition || 'error' });
+                        }
+                    }
+                }
             }
 
             if (stanza.is('message')) {
@@ -425,16 +598,16 @@ class XmppService extends EventEmitter {
                 const active = stanza.getChild('active', 'http://jabber.org/protocol/chatstates');
                 const paused = stanza.getChild('paused', 'http://jabber.org/protocol/chatstates');
 
-                if (composing) this.emit('typing', { jid: from, isTyping: true });
-                else if (active || paused) this.emit('typing', { jid: from, isTyping: false });
+                if (composing) this.emit('typing', { jid: fromBare, isTyping: true });
+                else if (active || paused) this.emit('typing', { jid: fromBare, isTyping: false });
                 
                 const received = stanza.getChild('received', 'urn:xmpp:receipts');
-                if (received) this.emit('delivery_update', { msgId: received.attrs.id, contactJid: from });
+                if (received) this.emit('delivery_update', { msgId: received.attrs.id, contactJid: fromBare });
                 
                 const displayed = stanza.getChild('displayed', 'urn:xmpp:chat-markers:0');
                 if (displayed) {
-                    this.setLastReadMessage(from, displayed.attrs.id);
-                    this.emit('read_update', { msgId: displayed.attrs.id, contactJid: from });
+                    this.setLastReadMessage(fromBare, displayed.attrs.id);
+                    this.emit('read_update', { msgId: displayed.attrs.id, contactJid: fromBare });
                 }
 
                 if (stanza.getChild('body')) {
@@ -443,12 +616,12 @@ class XmppService extends EventEmitter {
                     const delayChild = stanza.getChild('delay', 'urn:xmpp:delay');
                     const timestamp = delayChild ? new Date(delayChild.attrs.stamp) : new Date();
                     
-                    const isOutgoingEcho = from === myBareJid;
+                    const isOutgoingEcho = fromBare === myBareJid;
                     const type = isOutgoingEcho ? 'out' : 'in';
 
-                    const newMsg = { id: msgId, from: from, body, timestamp, type: type };
+                    const newMsg = { id: msgId, from: fromBare, body, timestamp, type: type };
                     
-                    const relevantContactJid = isOutgoingEcho ? to : from;
+                    const relevantContactJid = isOutgoingEcho ? to : fromBare;
                     await MessageStorageService.saveMessages(relevantContactJid, [newMsg]);
 
                     this.lastMessages[relevantContactJid] = { body, timestamp, type: type };

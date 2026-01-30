@@ -28,8 +28,6 @@ const ChatScreen = ({ route, navigation }) => {
   const contactJid = contact.jid.split('/')[0];
   const initialLoadDone = useRef(false);
 
-  const EMOJI_REGEX = /(\u00a9|\u00ae|[\u2000-\u3300]|\ud83c[\ud000-\udfff]|\ud83d[\ud000-\udfff]|\ud83e[\ud000-\udfff])/g;
-
   const isValidUrl = (str) => {
     try {
       return str.startsWith('http://') || str.startsWith('https://');
@@ -107,6 +105,14 @@ const ChatScreen = ({ route, navigation }) => {
         </View>
       ),
       headerStyle: { backgroundColor: AppColors.darkWalnut },
+      headerRight: () => (
+        <TouchableOpacity 
+          onPress={() => navigation.navigate('Call', { contact, isIncoming: false })}
+          style={{ marginRight: 16 }}
+        >
+          <Ionicons name="call" size={24} color="#fff" />
+        </TouchableOpacity>
+      ),
     });
   }, [contact.name, typing, navigation]);
 
@@ -114,7 +120,6 @@ const ChatScreen = ({ route, navigation }) => {
     let isMounted = true;
 
     const initChat = async () => {
-      // Шаг 1: Мгновенно показываем локальные сообщения
       const local = await MessageStorageService.getMessages(contactJid);
       if (isMounted) {
         setMessages(local);
@@ -123,13 +128,11 @@ const ChatScreen = ({ route, navigation }) => {
         initialLoadDone.current = true;
       }
 
-      // Шаг 2: Фоновая синхронизация с MAM (не блокирует UI)
       if (XmppService.isConnected) {
         setIsSyncing(true);
         const result = await XmppService.fetchHistory(contactJid);
         if (isMounted) {
           setIsSyncing(false);
-          // Обновляем только если есть новые сообщения
           if (result.newCount > 0) {
             console.log(`[Chat] Получено ${result.newCount} новых сообщений, обновляю UI`);
             setMessages(result.messages);
@@ -237,9 +240,8 @@ const ChatScreen = ({ route, navigation }) => {
   };
 
   const handleTextChange = useCallback((t) => {
-    const filteredText = t.replace(EMOJI_REGEX, '');
-    setText(filteredText);
-    XmppService.sendTypingStatus(contactJid, filteredText.length > 0);
+    setText(t);
+    XmppService.sendTypingStatus(contactJid, t.length > 0);
   }, [contactJid]);
 
   const getMessageStatus = useCallback((msg, index, allMessages) => {

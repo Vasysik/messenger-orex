@@ -8,14 +8,22 @@
     "scheme": "messengerorex",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": ["audio", "voip", "remote-notification"]
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#8B4513"
       },
-      "package": "com.vasys.messengerorex"
+      "package": "com.vasys.messengerorex",
+      "permissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.VIBRATE",
+        "android.permission.RECEIVE_BOOT_COMPLETED"
+      ]
     },
     "web": {
       "output": "single",
@@ -23,7 +31,15 @@
     },
     "plugins": [
       "expo-secure-store",
-      "expo-font"
+      "expo-font",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#8B4513",
+          "sounds": []
+        }
+      ]
     ],
     "extra": {
       "eas": {

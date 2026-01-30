@@ -9,6 +9,8 @@ import { AppColors } from '../constants/Colors';
 import { CommonStyles } from '../styles/CommonStyles';
 import { ChatListStyles as styles } from '../styles/ChatListStyles';
 import XmppService from '../services/XmppService';
+import NotificationService from '../services/NotificationService';
+import CallService from '../services/CallService';
 
 const ChatListScreen = ({ navigation }) => {
   const [contacts, setContacts] = useState([]);
@@ -18,6 +20,30 @@ const ChatListScreen = ({ navigation }) => {
   const [isModalVisible, setModalVisible] = useState(false);
   const [newJid, setNewJid] = useState('');
   const [, setRefresh] = useState(0);
+
+  useEffect(() => {
+    NotificationService.initialize();
+    CallService.setXmppService(XmppService);
+    
+    const onNotificationTapped = (data) => {
+      if (data.type === 'message' && data.jid) {
+        navigation.navigate('Chat', { 
+          contact: { jid: data.jid, name: data.jid.split('@')[0] } 
+        });
+      } else if (data.type === 'call' && data.jid) {
+        navigation.navigate('Call', {
+          contact: { jid: data.jid, name: data.jid.split('@')[0] },
+          isIncoming: true
+        });
+      }
+    };
+    
+    NotificationService.on('notification_tapped', onNotificationTapped);
+    
+    return () => {
+      NotificationService.off('notification_tapped', onNotificationTapped);
+    };
+  }, []);
 
   useEffect(() => {
     const update = () => setRefresh(k => k + 1);
